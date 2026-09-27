@@ -2,7 +2,24 @@
 
 **A purpose-aware company intelligence agent: give it a company and a reason, and it plans research around that reason, cites every claim, checks its own work, and gets faster with every run.**
 
+![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776AB) ![Tests: 258 passing, offline](https://img.shields.io/badge/tests-258%20passing%2C%20offline-14A38B) ![No agent framework](https://img.shields.io/badge/agent-hand--written%20state%20machine-111827) ![License: MIT](https://img.shields.io/badge/license-MIT-F2A93B)
+
+**📊 Deck:** [Scout_deck.pdf](docs/Scout_deck.pdf) · [Scout_deck.pptx](docs/Scout_deck.pptx) &nbsp;·&nbsp; **🏗️ Architecture:** [docs/architecture.md](docs/architecture.md) &nbsp;·&nbsp; **🧪 Evals:** [evals/results.md](evals/results.md) &nbsp;·&nbsp; **📁 Real runs:** [examples/](examples/)
+
 ![Scout UI](docs/img/ui.png)
+
+## At a glance
+
+| | |
+|---|---|
+| **Problem** | A sales rep, a competitor analyst and an interview candidate need *different* facts about the same company, but research agents run one generic prompt. |
+| **Approach** | Intake → Recall → Plan → [Execute ⇄ Critique]* → Synthesize → Verify → Reflect, as an explicit state machine with budgets on every loop. |
+| **Agentic patterns** | Plan-and-Execute, ReAct with tools, critic routing (retry / replan / unknown), deterministic self-verification, Reflexion-style lessons, human feedback, provider failover. |
+| **Trust** | Every claim cites collected evidence (100% coverage across 13 runs); numbers must appear in a cited snippet; 7 unverifiable claims went to *Unknowns* instead of the brief. |
+| **Learning** | Same question asked twice: **−33% tool calls, −29% LLM calls, −24% tokens, −51% time**, with 2× the facts reused ([proof](#how-it-learns-with-use)). |
+| **Try it** | No API key needed: clone, install, `python -m scout ui`, pick any `example · …` run to replay it. |
+
+**Contents:** [Quickstart](#quickstart) · [Architecture](#architecture) · [Agentic patterns](#agentic-patterns-map) · [How it learns](#how-it-learns-with-use) · [Sample I/O](#sample-input-and-output) · [Evals](#evals) · [Reliability and safety](#reliability-and-safety) · [Design decisions](#design-decisions-and-trade-offs) · [Limitations](#limitations-and-future-work)
 
 ## Why Scout
 
@@ -21,6 +38,22 @@ python -m scout ui          # then open http://localhost:8501
 ```
 
 **No API key is needed to replay the example runs**: pick any `example · …` run in the sidebar. Live runs need a Groq and/or Gemini key in `.env` (free tiers work). From the terminal: `python -m scout run "Prep me for an SDE intern interview at Zoho."`.
+
+**Deploy on Streamlit Community Cloud:** new app → this repo, branch `main`, main file `app/streamlit_app.py`, Python 3.12. With no secrets it runs in replay mode (the example runs and Insights work, no quota is spent). To allow live runs, add `GROQ_API_KEY` / `GEMINI_API_KEY` under *Secrets*; Streamlit exposes top-level secrets as environment variables, which is where [`config.py`](scout/config.py) reads them.
+
+### Repository map
+
+```text
+scout/agent/      orchestrator (state machine), intake, planner, executor, critic, synthesizer, verifier, reflector
+scout/tools/      web_search, fetch_page (SSRF guard), registry, cache
+scout/memory/     SQLite store: runs, facts, sources, lessons, feedback
+scout/prompts/    one Markdown prompt per stage
+scout/ui/ app/    Streamlit UI: live runs, replay, insights
+examples/         5 recorded real runs: trace.jsonl, report.md, metrics.json
+evals/            task set and results from recorded runs
+tests/            258 offline tests (fake LLM + fake search)
+docs/             deck, architecture, spec, screenshots
+```
 
 ## Architecture
 
@@ -184,11 +217,10 @@ Future work: scheduled recurring runs (competitor tracking), vector memory for f
 
 - **LLM providers (all free tier):** Groq — `openai/gpt-oss-120b`, `qwen/qwen3.8-27b`, `openai/gpt-oss-20b`; Google Gemini API — `gemini-flash-lite-latest` and `gemini-3.8-flash` (fallback). `gemma-4-31b-it` was probed and not used.
 - **Search:** Tavily (free tier) with DuckDuckGo (`ddgs`) as fallback; page text extracted with `trafilatura`.
-- **AI assistance:** Claude was used for architecture review and phase planning; Claude Code was used for implementation, directed and reviewed by the author.
+- **AI assistance:** AI assistants were used for architecture review, phase planning and implementation, directed and reviewed by the author.
 
 ## Links
 
-- Demo video: <VIDEO_LINK>
-- Slides: [docs/Scout_slides.pdf](docs/Scout_slides.pdf) (source: [docs/slides.md](docs/slides.md))
+- Deck (12 slides): [docs/Scout_deck.pdf](docs/Scout_deck.pdf) · [docs/Scout_deck.pptx](docs/Scout_deck.pptx)
 - Specification: [docs/SPEC.md](docs/SPEC.md) · Architecture: [docs/architecture.md](docs/architecture.md)
 - License: [MIT](LICENSE)

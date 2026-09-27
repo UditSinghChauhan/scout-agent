@@ -168,7 +168,6 @@ Repository layout. Local folder stays ~/Projects/techvruk ; name the public GitH
 
 ```
 scout-agent/
-├── CLAUDE.md standing rules for Claude Code (Section 6)
 ├── README.md
 ├── LICENSE MIT
 ├── requirements.txt
@@ -241,9 +240,9 @@ Repository layout
 └── scripts/learning_demo.sh
 ```
 
-## SECTION 6. STANDING RULES FOR CLAUDE CODE
+## SECTION 6. ENGINEERING STANDARDS
 
-These rules go into CLAUDE.md in Phase 0, and every prompt ends with a one-line reminder of them. The git rules are Udit's standing preference and are not negotiable.
+These rules apply to every phase. The git rules are Udit's standing preference and are not negotiable.
 
 Git
 
@@ -254,8 +253,6 @@ At the end of each phase (or sub-prompt), stage only the files that phase touche
 Write the commit message to .commit-msg.txt at the repo root (gitignored), then print the exact command for Udit: git commit -F .commit-msg.txt .
 
 Messages use Conventional Commits, for example feat(agent): add critic-driven replanning .
-
-Never add Co-Authored-By trailers for Claude.
 
 Secrets
 
@@ -301,7 +298,7 @@ Environment: WSL Ubuntu, virtualenv at .venv , all commands run from the repo ro
 
 ## SECTION 7. PHASE PLAN
 
-Eight phases, about 22 hours of work plus 6 hours of sleep, finishing with a submission by 8 PM Sunday, well ahead of the 11:30 PM deadline. T = the moment Phase 0 starts. Every phase ends at a gate: PHASE REPORT to Claude, then GO or FIX FIRST.
+Eight phases, about 22 hours of work plus 6 hours of sleep, finishing with a submission by 8 PM Sunday, well ahead of the 11:30 PM deadline. T = the moment Phase 0 starts. Every phase ends at a gate: a PHASE REPORT review, then GO or FIX FIRST.
 
 Checkpoint rule: if Phase 1 has no GO by T+6, apply the cut lines in Section 10 immediately.
 
@@ -333,7 +330,7 @@ Sleep T+11 to T+17 Udit commits and pushes first
 
 Phase 0: Foundation
 
-Scope: .gitignore , .venv , requirements.txt , pyproject.toml , .env.example , CLAUDE.md (Section 6), docs/SPEC.md (Sections 2–10 verbatim), scout/config.py , scout/llm.py ( complete , complete_json with repair, exponential backoff on 429 and 5xx, token counting), scout/schemas.py (all models from Section 4), tools/web_search.py (Tavily plus ddgs fallback), tools/fetch_page.py (with the SSRF guard), tests/fakes.py , scripts/smoke.py .
+Scope: .gitignore , .venv , requirements.txt , pyproject.toml , .env.example , docs/SPEC.md (Sections 2–10 verbatim), scout/config.py , scout/llm.py ( complete , complete_json with repair, exponential backoff on 429 and 5xx, token counting), scout/schemas.py (all models from Section 4), tools/web_search.py (Tavily plus ddgs fallback), tools/fetch_page.py (with the SSRF guard), tests/fakes.py , scripts/smoke.py .
 
 Acceptance:
 
@@ -423,7 +420,7 @@ Submit the form with repo link, video link and slides PDF. Target: submitted by 
 
 ## SECTION 8. PHASE REPORT FORMAT
 
-Claude Code ends every phase with exactly this block, and Udit pastes it to Claude unedited. Claude decides GO or FIX FIRST from the evidence in it, so real numbers and real command output matter more than prose.
+Every phase ends with exactly this block, reviewed unedited. The GO or FIX FIRST decision is made from the evidence in it, so real numbers and real command output matter more than prose.
 
 ```
 ## PHASE <n> REPORT
@@ -553,7 +550,5 @@ Invented facts — Medium — Mandatory citations, verifier, Unknowns section
 Time overrun — Medium — Phase gates, the T+6 checkpoint, cut lines above
 
 Learning gain looks small on camera — Medium — Demo reruns the same company so memory hits are certain; lessons are visible in the plan even when call savings are modest; report real numbers
-
-Claude Code API spend (Opus, high effort, API billing) — Medium — Use /effort medium for docs and UI phases; check /cost after each phase
 
 Last-minute submission failure — Low — Submit by 8 PM Sunday; follow the checklist in Section 9
