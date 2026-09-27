@@ -26,6 +26,28 @@ def is_personal_profile(url: str, patterns: tuple[str, ...]) -> bool:
     return any(p in low for p in patterns)
 
 
+_CONTACT_POLICY_RE = re.compile(
+    r"linkedin\s*(?:profile|/in\b|people|person|member|employee)|"
+    r"(?:personal|individual|employee)\s+profiles?|\be-?mails?\b|\bphone|contact (?:details|info)",
+    re.IGNORECASE,
+)
+_META_UNKNOWN_RE = re.compile(
+    r"^\s*(?:none|n/?a|nothing(?: (?:else|further))?|no (?:critical |major |significant |key |"
+    r"other |further |remaining )?(?:unknowns?|gaps?|missing information)\b.*)\s*\.?\s*$",
+    re.IGNORECASE,
+)
+
+
+def violates_contact_policy(text: str) -> bool:
+    """True if text recommends personal profiles or contact details (roles-only policy)."""
+    return bool(_CONTACT_POLICY_RE.search(text))
+
+
+def is_meta_unknown(text: str) -> bool:
+    """True for meta statements like "No critical unknowns..." or "None" in the Unknowns list."""
+    return bool(_META_UNKNOWN_RE.match(text))
+
+
 def scrub_text(text: str) -> str:
     """Replace emails and phone numbers in ``text``."""
     return _PHONE_CANDIDATE_RE.sub(_mask_phone, EMAIL_RE.sub(EMAIL_MASK, text))

@@ -11,6 +11,8 @@ $injected
 - 1 to $max_lessons NEW lessons for purpose "$purpose". Each under $max_words words, general
   (no company names), actionable for planning or searching, e.g. "For hiring signals, the
   careers page beats news search." Base them on what worked or failed above.
+- Never recommend personal profile pages (e.g. LinkedIn profiles), named people, emails, phone
+  numbers or other contact details: Scout records roles only.
 - A vote on EVERY injected lesson: helpful true if following it paid off in this run, else false.
 
 Reply with one JSON object:

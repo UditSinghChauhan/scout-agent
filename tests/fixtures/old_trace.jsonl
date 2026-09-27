@@ -1,0 +1,7 @@
+{"run_id": "20260927-075728-old1", "ts": "2026-09-27T07:57:28Z", "stage": "intake", "type": "stage_started", "payload": {"goal": "Research Zoho"}}
+{"run_id": "20260927-075728-old1", "ts": "2026-09-27T07:57:30Z", "stage": "plan", "type": "plan_created", "payload": {"purpose_type": "sales_prospect", "steps": [{"id": 1, "question": "Headcount?", "suggested_tools": ["web_search"]}, {"id": 2, "question": "Tools?"}], "lessons": ["an old plain-string lesson"]}}
+{"run_id": "20260927-075728-old1", "ts": "2026-09-27T07:57:31Z", "stage": "execute", "type": "step_started", "payload": {"id": 1, "question": "Headcount?"}}
+{"run_id": "20260927-075728-old1", "ts": "2026-09-27T07:57:32Z", "stage": "execute", "type": "thought", "payload": {"step_id": 1, "iteration": 1}}
+{"run_id": "20260927-075728-old1", "ts": "2026-09-27T07:57:33Z", "stage": "execute", "type": "tool_result", "payload": {"step_id": 1}}
+{"run_id": "20260927-075728-old1", "ts": "2026-09-27T07:57:34Z", "stage": "execute", "type": "error", "payload": {}}
+{"run_id": "20260927-075728-old1", "ts": "2026-09-27T07:57:40Z", "stage": "finish", "type": "run_finished", "payload": {"status": "ok", "report_md": "# Zoho\n\n- claim [1]\n\n## Sources\n\n1. <https://a.example>\n", "metrics": {"tool_calls": 1}}}

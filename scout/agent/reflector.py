@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from scout.llm import LLM
 from scout.prompts import load_prompt
+from scout.safety import violates_contact_policy
 from scout.schemas import Lesson
 
 MAX_LESSON_WORDS = 25
@@ -55,6 +56,5 @@ def reflect(
     )
     allowed = {lesson.id for lesson in injected}
     votes = [v for v in reflection.votes if v.lesson_id in allowed]
-    return reflection.model_copy(
-        update={"lessons": reflection.lessons[:max_lessons], "votes": votes}
-    )
+    lessons = [t for t in reflection.lessons if not violates_contact_policy(t)][:max_lessons]
+    return reflection.model_copy(update={"lessons": lessons, "votes": votes})

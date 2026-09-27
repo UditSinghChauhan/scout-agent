@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import json
 import logging
-import shutil
+import subprocess
+import sys
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -18,7 +19,7 @@ from scout.agent.orchestrator import Orchestrator
 from scout.config import load_settings
 from scout.events import Event, RunRecorder, load_trace
 from scout.insights import apply_feedback, insights_tables
-from scout.memory.store import MemoryStore
+from scout.memory.store import MemoryStore, reset_memory
 
 app = typer.Typer(add_completion=False, help="Scout: purpose-aware company research agent.")
 console = Console()
@@ -208,14 +209,18 @@ def reset(
         console.print("Refusing to reset without --yes.")
         raise typer.Exit(1)
     settings = load_settings()
-    removed = []
-    if settings.db_path.exists():
-        settings.db_path.unlink()
-        removed.append(str(settings.db_path))
-    if cache and settings.cache_dir.exists():
-        shutil.rmtree(settings.cache_dir)
-        removed.append(str(settings.cache_dir))
+    removed = reset_memory(settings.db_path, settings.cache_dir if cache else None)
     console.print(f"Removed: {', '.join(removed) or 'nothing (already clean)'}")
+
+
+@app.command()
+def ui(
+    port: Annotated[int, typer.Option(help="Port for the Streamlit server.")] = 8501,
+) -> None:
+    """Launch the Streamlit UI (live runs, replays, insights)."""
+    app_path = Path(__file__).resolve().parent.parent / "app" / "streamlit_app.py"
+    cmd = [sys.executable, "-m", "streamlit", "run", str(app_path), "--server.port", str(port)]
+    raise typer.Exit(subprocess.call(cmd))
 
 
 if __name__ == "__main__":

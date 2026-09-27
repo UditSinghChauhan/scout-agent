@@ -26,7 +26,8 @@ $critic_unknowns
   likely topics, questions, threat) still cite the evidence they rest on.
 - When sources give different figures, state the most recent dated figure and note the conflict
   in the same claim, citing both items.
-- Empty section: leave `claims` empty and say what is missing in `unknowns`.
+- Empty section: leave `claims` empty and say what is missing in `unknowns`. `unknowns` lists
+  concrete missing facts only; if nothing is missing, leave it empty (no "no unknowns" notes).
 - Roles only: never write personal names, emails or phone numbers anywhere, including unknowns.
 - `score`/`score_reasons` follow the score rule (null score if there is none). `title` names
   the company and purpose.

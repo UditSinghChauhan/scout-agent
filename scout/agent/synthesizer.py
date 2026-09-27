@@ -107,7 +107,7 @@ def render_markdown(brief: Brief, ledger: EvidenceLedger, run_id: str) -> str:
         lines += [f"- {c.text} {cite(c)}".rstrip() for c in section.claims]
         lines.append("")
     lines += ["## Unknowns", ""]
-    lines += [f"- {u}" for u in brief.unknowns] or ["- None recorded."]
+    lines += [f"- {u}" for u in brief.unknowns] or ["- None"]
     lines += ["", "## Sources", ""]
     lines += [f"{n}. <{url}>" for url, n in numbers.items()] or ["_No sources cited._"]
     return "\n".join(lines) + "\n"

@@ -37,7 +37,7 @@ from scout.events import Event, EventType
 from scout.llm import LLM, DeadlineExceededError
 from scout.memory.store import MemoryStore, domain_of, normalize_entity, now_utc
 from scout.playbooks import Playbook, get_playbook
-from scout.safety import scrub_brief
+from scout.safety import is_meta_unknown, scrub_brief, violates_contact_policy
 from scout.schemas import (
     Brief,
     Critique,
@@ -177,6 +177,8 @@ class Orchestrator:
         state.stage = "recall"
         assert state.task is not None
         s = self.settings
+        playbook = state.playbook or get_playbook(state.task.purpose_type)
+        relevance = " ".join([state.goal, *playbook.research_hints])
         fresh: list[Fact] = []
         stale: list[Fact] = []
         for target in state.task.targets:
@@ -186,10 +188,15 @@ class Orchestrator:
                 s.news_ttl_days,
                 s.memory_max_facts - len(fresh),
                 s.memory_max_chars,
+                relevance=relevance,
             )
             fresh += f
             stale += st
-        lessons = self.store.top_lessons(state.task.purpose_type, s.lessons_top_n)
+        lessons = [
+            lesson
+            for lesson in self.store.lessons(state.task.purpose_type)
+            if not violates_contact_policy(lesson.text)
+        ][: s.lessons_top_n]
         self.store.mark_used(lesson.id for lesson in lessons if lesson.id is not None)
         state.memory = MemoryContext(
             fresh_facts=fresh,
@@ -456,7 +463,8 @@ class Orchestrator:
         if issues:
             state.brief = move_to_unknowns(state.brief, issues)
         missing = [f"Not found: {q}" for q in state.critic_unknowns]
-        unknowns = dedupe(list(state.brief.unknowns) + missing, UNKNOWN_OVERLAP)
+        unknowns = [u for u in state.brief.unknowns if not is_meta_unknown(u)]
+        unknowns = dedupe(unknowns + missing, UNKNOWN_OVERLAP)
         state.brief = state.brief.model_copy(update={"unknowns": unknowns})
         state.unsupported = len(issues)
         state.brief = scrub_brief(state.brief)

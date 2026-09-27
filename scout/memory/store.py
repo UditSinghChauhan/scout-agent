@@ -227,16 +227,28 @@ class MemoryStore:
         max_facts: int,
         max_chars: int,
         now: datetime | None = None,
+        relevance: str = "",
     ) -> tuple[list[Fact], list[Fact]]:
-        """(fresh, stale) facts for an entity; fresh capped by count and total characters."""
+        """(fresh, stale) facts for an entity; fresh capped by count and total characters.
+
+        Fresh facts are ranked by keyword overlap with ``relevance`` (purpose hints + goal),
+        then by freshness, before the caps apply.
+        """
         now = now or now_utc()
-        fresh: list[Fact] = []
+        wanted = keywords(relevance)
+        candidates: list[Fact] = []
         stale: list[Fact] = []
-        used = 0
-        for fact in self.facts(entity):
-            if not self.is_fresh(fact, now, stable_days, news_days):
+        for fact in self.facts(entity):  # newest first
+            if self.is_fresh(fact, now, stable_days, news_days):
+                candidates.append(fact)
+            else:
                 stale.append(fact)
-                continue
+        if wanted:
+            # Stable sort: equal relevance keeps newest-first order.
+            candidates.sort(key=lambda f: -len(wanted & keywords(f"{f.claim} {f.topic}")))
+        fresh: list[Fact] = []
+        used = 0
+        for fact in candidates:
             cost = len(fact.claim) + len(fact.source_url) + 20
             if len(fresh) < max_facts and used + cost <= max_chars:
                 fresh.append(fact)
@@ -370,3 +382,22 @@ class MemoryStore:
     def feedback(self) -> list[dict[str, Any]]:
         """All feedback rows."""
         return [dict(r) for r in self.conn.execute("SELECT * FROM feedback ORDER BY id")]
+
+
+def reset_memory(db_path: Path, cache_dir: Path | None = None) -> list[str]:
+    """Delete the memory database (and its WAL files), optionally the cache. Returns paths."""
+    removed = []
+    for path in (
+        db_path,
+        db_path.with_name(db_path.name + "-wal"),
+        db_path.with_name(db_path.name + "-shm"),
+    ):
+        if path.exists():
+            path.unlink()
+            removed.append(str(path))
+    if cache_dir is not None and cache_dir.exists():
+        import shutil
+
+        shutil.rmtree(cache_dir)
+        removed.append(str(cache_dir))
+    return removed
