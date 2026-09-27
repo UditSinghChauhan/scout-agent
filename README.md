@@ -217,7 +217,7 @@ Future work: scheduled recurring runs (competitor tracking), vector memory for f
 
 - **LLM providers (all free tier):** Groq — `openai/gpt-oss-120b`, `qwen/qwen3.8-27b`, `openai/gpt-oss-20b`; Google Gemini API — `gemini-flash-lite-latest` and `gemini-3.8-flash` (fallback). `gemma-4-31b-it` was probed and not used.
 - **Search:** Tavily (free tier) with DuckDuckGo (`ddgs`) as fallback; page text extracted with `trafilatura`.
-- **AI assistance:** Claude was used for architecture review and phase planning; Claude Code was used for implementation, directed and reviewed by the author.
+- **AI assistance:** AI assistants were used for architecture review, phase planning and implementation, directed and reviewed by the author.
 
 ## Links
 
