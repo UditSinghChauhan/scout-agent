@@ -79,6 +79,10 @@ def test_unreached_steps_without_budget_stop() -> None:
     view = build_view([*_plan(2), ev("run_finished", {"status": "ok", "metrics": {}}, "finish")])
     assert [s.status for s in view.steps] == ["done", "not reached"]
     assert all(s.status != "pending" for s in view.steps)
+    # Stages that were never started in old traces show "n/a", not "pending".
+    assert view.stages["reflect"] == "n/a"
+    assert view.stages["verify"] == "n/a"
+    assert all(v != "pending" for v in view.stages.values())
 
 
 def test_step_summary_and_notable() -> None:
@@ -95,6 +99,16 @@ def test_active_step_tracked_while_running() -> None:
     for event in _plan(2)[:2]:
         reduce(view, event)
     assert view._current == 1 and not view.finished
+    # Recovered errors (e.g. invalid JSON) use kind "recovered_error", not "error".
+    reduce(view, ev("error", {"step_id": 1, "message": "invalid action JSON"}))
+    entry = view.step(1).entries[-1]
+    assert entry.kind == "recovered_error" and entry.ok is True
+    assert "invalid action JSON" not in view.errors  # not counted as a real error
+    # A fatal error still uses kind "error".
+    reduce(view, ev("error", {"step_id": 1, "message": "Intake failed: timeout"}))
+    fatal = view.step(1).entries[-1]
+    assert fatal.kind == "error" and fatal.ok is False
+    assert "Intake failed: timeout" in view.errors
 
 
 # --- jargon filter and dedupe ------------------------------------------------------------------
@@ -221,6 +235,9 @@ def test_insights_from_traces(tmp_path: Path) -> None:
     assert texts["Read the careers page before generic news searches."]["uses"] == 1
     assert texts["Read the careers page before generic news searches."]["up"] == 1  # vote event
     assert "For interview prep, search the written test format early." in texts
+    # Lesson scores are formatted as 2-decimal strings (e.g. "0.67", not 0.6700).
+    for lesson in lessons:
+        assert isinstance(lesson["score"], str) and len(lesson["score"].split(".")[-1]) == 2
     sources = recorded_sources(recorded)
     assert sources == [{"domain": "example.com", "useful": 1, "useless": 0, "score": 2 / 3}]
 

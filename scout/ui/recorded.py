@@ -115,10 +115,10 @@ def recorded_lessons(runs: list[RecordedRun]) -> list[dict[str, Any]]:
             {
                 **item,
                 "votes": f"+{item['up']}/-{item['down']}",
-                "score": round(score(item["up"], item["down"]), 2),
+                "score": f"{score(item['up'], item['down']):.2f}",
             }
         )
-    return sorted(rows, key=lambda r: (-r["score"], -r["uses"]))
+    return sorted(rows, key=lambda r: (-float(r["score"]), -r["uses"]))
 
 
 def recorded_sources(runs: list[RecordedRun]) -> list[dict[str, Any]]:

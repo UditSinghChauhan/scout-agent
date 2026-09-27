@@ -86,10 +86,10 @@ def test_reducer_provider_switch_and_error() -> None:
     reduce(view, ev("error", {"step_id": 1, "message": "invalid action JSON"}))
     reduce(view, ev("provider_switched", {"tier": "smart", "from": "x", "to": "y"}, "synthesize"))
     step = view.step(1)
-    assert [e.kind for e in step.entries] == ["switch", "error"]
+    assert [e.kind for e in step.entries] == ["switch", "recovered_error"]
     assert "groq/a → groq/b" in step.entries[0].text
     assert len(view.switches) == 2 and view.run_entries[0].kind == "switch"
-    assert view.errors == ["invalid action JSON"]
+    assert view.errors == []  # recovered errors are not counted
     assert view.stages["execute"] == "done" and view.stages["synthesize"] == "running"
 
 

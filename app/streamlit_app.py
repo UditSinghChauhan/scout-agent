@@ -71,6 +71,7 @@ STATUS_COLORS = {
     "skipped (budget)": "gray",
     "not reached": "gray",
     "error": "red",
+    "n/a": "gray",
 }
 ENTRY_ICONS = {
     "thought": "💭",
@@ -246,7 +247,9 @@ def render_entries(entries: list[TraceEntry]) -> None:
         icon = ENTRY_ICONS.get(entry.kind, "•")
         text = entry.text if len(entry.text) <= 400 else entry.text[:400] + "…"
         text = escape_md(text)
-        if entry.kind == "error":
+        if entry.kind == "recovered_error":
+            st.caption("↻ Model returned malformed JSON; retried.")
+        elif entry.kind == "error":
             st.error(f"{icon} {text}")
         elif entry.kind in ("wait", "switch"):
             st.caption(f"{icon} {text}")
@@ -563,7 +566,7 @@ def store_lessons(store: MemoryStore) -> list[dict[str, Any]]:
             "purpose": purpose_label(lesson.purpose_type),
             "lesson": lesson.text,
             "votes": f"+{lesson.votes_up}/-{lesson.votes_down}",
-            "score": round(score(lesson.votes_up, lesson.votes_down), 2),
+            "score": f"{score(lesson.votes_up, lesson.votes_down):.2f}",
             "uses": uses.get(lesson.id or 0, 0),
         }
         for lesson in store.lessons()

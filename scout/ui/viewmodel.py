@@ -306,10 +306,17 @@ def _on_rate_limited(view: RunView, p: dict[str, Any], event: Event) -> None:
     target.append(TraceEntry("wait", wait_line(p)))
 
 
+# Error messages the executor recovered from (the ReAct loop continued).
+_RECOVERED_ERRORS = {"invalid action JSON", "invalid final action JSON"}
+
+
 def _on_error(view: RunView, p: dict[str, Any], event: Event) -> None:
     message = str(p.get("message", "error"))
-    view.errors.append(message)
-    _entry_target(view, p).append(TraceEntry("error", message, False))
+    recovered = message in _RECOVERED_ERRORS
+    if not recovered:
+        view.errors.append(message)
+    kind = "recovered_error" if recovered else "error"
+    _entry_target(view, p).append(TraceEntry(kind, message, recovered))
 
 
 def _on_verification(view: RunView, p: dict[str, Any], event: Event) -> None:
@@ -348,6 +355,8 @@ def _on_run_finished(view: RunView, p: dict[str, Any], event: Event) -> None:
     for name, status in view.stages.items():
         if status == "running":
             view.stages[name] = "done"
+        elif status == "pending":
+            view.stages[name] = "n/a"
     view._current = None
 
 
