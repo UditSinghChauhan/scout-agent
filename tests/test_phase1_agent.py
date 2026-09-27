@@ -117,6 +117,7 @@ def test_orchestrator_happy_path(tmp_path: Path) -> None:
             finish_action("https://example.com/zoho-news/2"),
             COMPLETE,
             brief_reply(["E1", "E2", "E3"]),
+            {"lessons": ["For hiring volume, search the careers page before news."]},
         ]
     )
     orch = Orchestrator(settings, llm=fake.llm(settings), registry=registry(settings))
@@ -131,7 +132,7 @@ def test_orchestrator_happy_path(tmp_path: Path) -> None:
     final = events[-1].payload
     assert final["status"] == "ok"
     assert final["metrics"]["tool_calls"] == 3
-    assert final["metrics"]["llm_calls"] == 10
+    assert final["metrics"]["llm_calls"] == 11
     assert final["metrics"]["citation_coverage"] == 100.0
     assert final["metrics"]["budget_exhausted"] is False
     report = final["report_md"]

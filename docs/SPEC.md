@@ -146,7 +146,9 @@ Source score = (useful + 1) / (useful + useless + 2). Lesson rank uses the same 
 
 Entity names are normalized (lowercase, strip "pvt ltd", "inc", "limited"; prefer the domain when known).
 
-Budgets (all in config.py , all overridable): max 6 planned steps (8 with follow-ups), 4 ReAct iterations per step, 30 tool calls, 60 LLM calls, 240 seconds wall clock, 15 seconds per fetch. Hitting a budget never crashes: Scout synthesizes from what it has and says so in the brief.
+Budgets (all in config.py , all overridable): max 5 planned steps (8 with follow-ups), 1 follow-up per run, 3 ReAct iterations per step, retries capped at 1 per step and 2 per run, 30 tool calls, 60 LLM calls, 480 seconds wall clock, 15 seconds per fetch. Hitting a budget never crashes: Scout synthesizes from what it has and says so in the brief. A backoff wait never overshoots the wall clock; synthesis gets a short grace period.
+
+Provider router. LLM calls go through a router that holds an ordered candidate list per tier (smart: planner, synthesizer, reflector; fast: executor, critic). A candidate is a provider (base URL plus the name of its key's environment variable) and a model; the routing table lives in config.py and contains no secrets. Several Groq models are listed because Groq quotas are per model, with Gemini as the last fallback. On a daily-quota error, a 429 whose wait exceeds 20 seconds, or a repeated short 429, the candidate cools down (until the provider's reported reset time) and the call fails over to the next one; a 401, 403 or 404 disables the candidate for the run. Every switch is traced as a provider_switched event and every call records its provider and model. Without router keys, the single-provider LLM_* settings are used.
 
 Context management. The executor sees the step question, the playbook hint and a compact scratchpad (last 3 observations in full, older ones as one-line summaries). The evidence ledger lives outside the prompt. Tokens are counted per call.
 

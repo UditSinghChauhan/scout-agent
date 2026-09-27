@@ -96,6 +96,14 @@ def run(tmp_path: Path, script: list, **overrides: object) -> tuple[list[Event],
     return list(orch.run("Prep me for Zoho")), fake
 
 
+def synth_prompt(fake: FakeLLM) -> str:
+    return next(
+        r.messages[0]["content"]
+        for r in reversed(fake.requests)
+        if "Scout's synthesizer" in r.messages[0]["content"]
+    )
+
+
 def types(events: list[Event]) -> list[str]:
     return [e.type for e in events]
 
@@ -187,8 +195,7 @@ def test_critic_unknown_goes_to_synthesizer(tmp_path: Path) -> None:
     events, fake = run(
         tmp_path, [INTAKE, plan(1), search(), finish(), critique("unknown"), brief()]
     )
-    synth_prompt = fake.requests[-1].messages[0]["content"]
-    assert "- Q1?" in synth_prompt
+    assert "- Q1?" in synth_prompt(fake)
     assert events[-1].payload["metrics"]["critique_verdicts"] == {"unknown": 1}
 
 
@@ -250,7 +257,7 @@ def test_conflict_note_passes_when_both_figures_cited() -> None:
 
 def test_synthesizer_prompt_has_conflict_rule(tmp_path: Path) -> None:
     _, fake = run(tmp_path, [INTAKE, plan(1), search(), finish(), critique("complete"), brief()])
-    assert "most recent dated figure" in fake.requests[-1].messages[0]["content"]
+    assert "most recent dated figure" in synth_prompt(fake)
 
 
 def test_verifier_revision_fixes_numeric_claim(tmp_path: Path) -> None:

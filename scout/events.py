@@ -73,3 +73,12 @@ class RunRecorder:
         for event in events:
             self.write(event)
             yield event
+
+
+def load_trace(path: Path) -> list[Event]:
+    """Read a trace.jsonl back into Events (for replay, feedback and insights; no network)."""
+    events = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line.strip():
+            events.append(Event.model_validate_json(line))
+    return events

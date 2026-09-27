@@ -24,6 +24,7 @@ from scout.agent.critic import critique_step
 from scout.agent.executor import EvidenceLedger, execute_step
 from scout.agent.intake import run_intake
 from scout.agent.planner import fallback_plan, make_plan
+from scout.agent.reflector import reflect
 from scout.agent.synthesizer import citation_stats, fallback_brief, render_markdown, synthesize
 from scout.agent.verifier import (
     apply_revisions,
@@ -34,11 +35,14 @@ from scout.agent.verifier import (
 from scout.config import Settings
 from scout.events import Event, EventType
 from scout.llm import LLM, DeadlineExceededError
+from scout.memory.store import MemoryStore, domain_of, normalize_entity, now_utc
 from scout.playbooks import Playbook, get_playbook
 from scout.safety import scrub_brief
 from scout.schemas import (
     Brief,
     Critique,
+    Evidence,
+    Fact,
     MemoryContext,
     ResearchPlan,
     RunMetrics,
@@ -46,10 +50,12 @@ from scout.schemas import (
     StepResult,
     Task,
 )
+from scout.textutil import dedupe
 from scout.tools.registry import ToolRegistry, build_registry
 
 logger = logging.getLogger(__name__)
 T = TypeVar("T")
+UNKNOWN_OVERLAP = 0.5  # an Unknowns line sharing half its keywords with an earlier one is a repeat
 
 
 def new_run_id() -> str:
@@ -78,6 +84,9 @@ class RunState:
     flagged_numeric: list[str] = field(default_factory=list)
     unsupported: int = 0
     revised: int = 0
+    memory_steps: int = 0
+    facts_reused: int = 0
+    step_log: list[dict[str, Any]] = field(default_factory=list)
     stage: str = "intake"
 
 
@@ -90,11 +99,14 @@ class Orchestrator:
         llm: LLM | None = None,
         registry: ToolRegistry | None = None,
         run_id: str | None = None,
+        store: MemoryStore | None = None,
     ) -> None:
         self.settings = settings
         self.llm = llm or LLM(settings=settings)
-        self.registry = registry or build_registry(settings)
+        self.store = store if store is not None else MemoryStore(settings.db_path)
+        self.registry = registry or build_registry(settings, store=self.store)
         self.run_id = run_id or new_run_id()
+        self.started_at = now_utc()
         self.clock = self.llm._clock
         self.budget = Budget(settings, self.llm, clock=self.clock)
         self._started = self.clock()
@@ -161,10 +173,41 @@ class Orchestrator:
         state.playbook = get_playbook(state.task.purpose_type)
 
     def _recall(self, state: RunState) -> Iterator[Event]:
-        """Seam for Phase 3 (fact memory, lessons, source scores). Empty context for now."""
+        """Load fresh facts for the targets, the top lessons for the purpose and source scores."""
         state.stage = "recall"
-        state.memory = MemoryContext()
-        yield from ()
+        assert state.task is not None
+        s = self.settings
+        fresh: list[Fact] = []
+        stale: list[Fact] = []
+        for target in state.task.targets:
+            f, st = self.store.recall(
+                normalize_entity(target),
+                s.fact_ttl_days,
+                s.news_ttl_days,
+                s.memory_max_facts - len(fresh),
+                s.memory_max_chars,
+            )
+            fresh += f
+            stale += st
+        lessons = self.store.top_lessons(state.task.purpose_type, s.lessons_top_n)
+        self.store.mark_used(lesson.id for lesson in lessons if lesson.id is not None)
+        state.memory = MemoryContext(
+            fresh_facts=fresh,
+            stale_facts=stale,
+            lessons=lessons,
+            source_scores=self.store.source_scores(),
+        )
+        yield self._event(
+            "recall",
+            "stage_started",
+            {
+                "entities": [normalize_entity(t) for t in state.task.targets],
+                "fresh_facts": len(fresh),
+                "stale_facts": len(stale),
+                "lessons": [{"id": lesson.id, "text": lesson.text} for lesson in lessons],
+                "known_sources": len(state.memory.source_scores),
+            },
+        )
 
     def _plan(self, state: RunState) -> Iterator[Event]:
         state.stage = "plan"
@@ -192,7 +235,9 @@ class Orchestrator:
             {
                 "purpose_type": state.task.purpose_type,
                 "steps": [s.model_dump() for s in state.plan.steps],
-                "lessons": [lesson.text for lesson in state.memory.lessons],
+                "lessons": [
+                    {"id": lesson.id, "text": lesson.text} for lesson in state.memory.lessons
+                ],
             },
         )
 
@@ -205,8 +250,14 @@ class Orchestrator:
         assert state.plan is not None
         steps: list[Step] = list(state.plan.steps[: self.settings.max_total_steps])
         index = 0
-        while index < len(steps) and self._budget_ok():
+        while index < len(steps):
             step = steps[index]
+            if step.answered_from_memory:
+                yield from self._memory_step(state, step)
+                index += 1
+                continue
+            if not self._budget_ok():
+                break
             approach: str | None = None
             for attempt in range(1 + self.settings.max_retries_per_step):
                 result = yield from self._run_step(state, step, approach)
@@ -237,6 +288,27 @@ class Orchestrator:
                 break
             index += 1
         state.plan = state.plan.model_copy(update={"steps": steps})
+
+    def _memory_step(self, state: RunState, step: Step) -> Iterator[Event]:
+        """Answer a step from remembered facts: no tools, no LLM; citations keep their URLs."""
+        facts = {f.id: f for f in state.memory.fresh_facts}
+        evidence = [
+            state.ledger.add_fact(facts[i], step.id) for i in step.memory_fact_ids if i in facts
+        ]
+        state.memory_steps += 1
+        state.facts_reused += len(evidence)
+        state.step_log.append({"step_id": step.id, "question": step.question, "verdict": "memory"})
+        yield self._event(
+            "execute",
+            "memory_hit",
+            {
+                "step_id": step.id,
+                "question": step.question,
+                "fact_ids": step.memory_fact_ids,
+                "evidence_ids": [e.id for e in evidence],
+                "sources": sorted({e.source_url for e in evidence}),
+            },
+        )
 
     def _run_step(
         self, state: RunState, step: Step, approach: str | None
@@ -295,6 +367,16 @@ class Orchestrator:
             return None
         yield from self._notices("critique")
         state.critiques.append(critique)
+        state.step_log.append(
+            {
+                "step_id": step.id,
+                "question": step.question,
+                "verdict": critique.verdict,
+                "reason": critique.reason,
+                "new_approach": critique.new_approach,
+                "evidence": len(result.evidence),
+            }
+        )
         yield self._event(
             "critique",
             "critique",
@@ -374,11 +456,8 @@ class Orchestrator:
         if issues:
             state.brief = move_to_unknowns(state.brief, issues)
         missing = [f"Not found: {q}" for q in state.critic_unknowns]
-        extra = [m for m in missing if m not in state.brief.unknowns]
-        if extra:
-            state.brief = state.brief.model_copy(
-                update={"unknowns": list(state.brief.unknowns) + extra}
-            )
+        unknowns = dedupe(list(state.brief.unknowns) + missing, UNKNOWN_OVERLAP)
+        state.brief = state.brief.model_copy(update={"unknowns": unknowns})
         state.unsupported = len(issues)
         state.brief = scrub_brief(state.brief)
         state.report_md = render_markdown(state.brief, state.ledger, self.run_id)
@@ -394,8 +473,82 @@ class Orchestrator:
         )
 
     def _reflect(self, state: RunState) -> Iterator[Event]:
-        """Seam for Phase 3 reflector (lessons, persistence)."""
-        yield from ()
+        """Persist verified facts and source ratings, then learn lessons (one LLM call)."""
+        state.stage = "reflect"
+        assert state.task is not None and state.brief is not None
+        self._persist_facts(state)
+        for critique in state.critiques:
+            for url, rating in critique.source_ratings.items():
+                self.store.rate_source(url, rating == "useful")
+        if self.llm.usage.llm_calls >= self.settings.max_llm_calls:
+            return
+        try:
+            reflection = reflect(
+                self.llm,
+                state.task.purpose_type,
+                self._run_summary(state),
+                state.memory.lessons,
+                self.settings.reflector_max_lessons,
+            )
+        except Exception as exc:  # noqa: BLE001 - learning is optional, the brief is done
+            yield from self._notices("reflect")
+            yield self._event("reflect", "error", {"message": f"Reflection failed: {exc}"})
+            return
+        yield from self._notices("reflect")
+        for vote in reflection.votes:
+            self.store.vote(vote.lesson_id, vote.helpful)
+        for text in reflection.lessons:
+            lesson, merged = self.store.add_or_merge_lesson(
+                state.task.purpose_type, text, self.settings.lesson_merge_overlap
+            )
+            yield self._event(
+                "reflect",
+                "lesson_learned",
+                {"lesson_id": lesson.id, "text": lesson.text, "proposed": text, "merged": merged},
+            )
+
+    def _persist_facts(self, state: RunState) -> None:
+        """Store evidence cited by the verified brief as facts, keyed by normalized entity."""
+        assert state.task is not None and state.brief is not None
+        cited = {i for sec in state.brief.sections for c in sec.claims for i in c.evidence_ids}
+        by_entity: dict[str, list[Evidence]] = {}
+        for e in state.ledger.items:
+            if e.id not in cited or e.from_memory:
+                continue
+            target = next(
+                (t for t in state.task.targets if normalize_entity(t) in e.claim.lower()),
+                state.task.targets[0],
+            )
+            by_entity.setdefault(normalize_entity(target), []).append(e)
+        for entity, items in by_entity.items():
+            self.store.add_facts(entity, items, self.run_id)
+
+    def _run_summary(self, state: RunState) -> str:
+        """Compact run summary for the reflector."""
+        assert state.task is not None
+        lines = [f"Goal: {state.goal}", f"Purpose: {state.task.purpose_type}", "Steps:"]
+        for entry in state.step_log:
+            line = f"- step {entry['step_id']}: {entry['question']} -> {entry['verdict']}"
+            if entry.get("reason"):
+                line += f" ({entry['reason']})"
+            if entry.get("new_approach"):
+                line += f"; retry approach: {entry['new_approach']}"
+            lines.append(line)
+        useful: set[str] = set()
+        useless: set[str] = set()
+        for critique in state.critiques:
+            for url, rating in critique.source_ratings.items():
+                (useful if rating == "useful" else useless).add(domain_of(url))
+        lines.append(f"Useful domains: {', '.join(sorted(useful)) or 'none'}")
+        lines.append(f"Useless domains: {', '.join(sorted(useless - useful)) or 'none'}")
+        lines.append(
+            f"Tool calls {self.budget.tool_calls}, LLM calls {self.llm.usage.llm_calls}, "
+            f"evidence {len(state.ledger.items)}, steps from memory {state.memory_steps}, "
+            f"budget {self.budget.exhausted_reason or 'ok'}"
+        )
+        if state.brief is not None and state.brief.unknowns:
+            lines.append("Unknowns: " + "; ".join(state.brief.unknowns[:5]))
+        return "\n".join(lines)
 
     # --- finish -----------------------------------------------------------------------------
 
@@ -424,27 +577,48 @@ class Orchestrator:
             critique_verdicts=dict(Counter(c.verdict for c in state.critiques)),
             retries=state.retries,
             replans=state.followups,
+            memory_steps=state.memory_steps,
+            facts_reused=state.facts_reused,
+            cache_hits=self.registry.stats.get("cache_hits", 0),
+            lessons_injected=len(state.memory.lessons),
         )
 
     def _finish(self, state: RunState) -> Event:
         metrics = self.metrics(state)
         cited, total = citation_stats(state.brief, state.ledger) if state.brief else (0, 0)
+        metrics_payload = {
+            **metrics.model_dump(),
+            "total_tokens": metrics.total_tokens,
+            "claims": total,
+            "cited_claims": cited,
+            "evidence_items": len(state.ledger.items),
+            "budget_reason": self.budget.exhausted_reason,
+            "injected_lessons": [lesson.id for lesson in state.memory.lessons],
+        }
+        if state.task is not None:
+            try:
+                self.store.save_run(
+                    self.run_id,
+                    state.goal,
+                    state.task.purpose_type,
+                    state.task.targets,
+                    self.started_at,
+                    now_utc(),
+                    metrics_payload,
+                )
+            except Exception:  # noqa: BLE001 - never fail the run on bookkeeping
+                logger.exception("Could not save run %s", self.run_id)
         return self._event(
             "finish",
             "run_finished",
             {
                 "status": "ok" if state.brief else "failed",
+                "task": state.task.model_dump() if state.task else None,
+                "plan": state.plan.model_dump() if state.plan else None,
                 "report_md": state.report_md,
                 "brief": state.brief.model_dump() if state.brief else None,
                 "evidence": [e.model_dump() for e in state.ledger.items],
-                "metrics": {
-                    **metrics.model_dump(),
-                    "total_tokens": metrics.total_tokens,
-                    "claims": total,
-                    "cited_claims": cited,
-                    "evidence_items": len(state.ledger.items),
-                    "budget_reason": self.budget.exhausted_reason,
-                },
+                "metrics": metrics_payload,
             },
         )
 

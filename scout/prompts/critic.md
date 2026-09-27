@@ -23,6 +23,9 @@ $sources
 - unknown: nothing useful was found and the information is probably not public (internal
   tools, budgets, internal decision-makers, exact hiring numbers); stop trying.
 
+Never ask for a retry that would need information Scout's policy forbids: personal profile
+pages, named individuals or contact details (emails, phone numbers). Mark such steps unknown.
+
 Reply with one JSON object:
 {"verdict": "complete|retry|followup|unknown", "reason": "one sentence", "new_approach": null, "followup": null, "source_ratings": {"<url>": "useful|useless"}}
 

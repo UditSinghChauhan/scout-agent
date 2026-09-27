@@ -12,17 +12,17 @@ Constraints: $constraints
 ## Playbook (guidance, not a script)
 $playbook
 
-## What Scout already knows
+## What Scout already knows (fresh facts from earlier runs, with ids)
 $memory
 
-## Lessons from earlier runs
+## Lessons from earlier runs (apply them)
 $lessons
 
 ## Tools the executor can use
 $tools
 
 ## Rules
-- At most $max_steps steps. Prefer fewer, sharper steps over many vague ones.
+- At most $max_steps research steps (memory steps are extra). Prefer fewer, sharper steps.
 - Each step asks ONE specific, answerable question about the target(s) that feeds the output
   sections. Name the company in the question.
 - `rationale`: why this step matters for the purpose.
@@ -33,8 +33,12 @@ $tools
   engineering blog, press/news, and reputable third-party coverage.
 - For people, ask about roles and functions only, never named individuals, profiles or
   contact details.
-- Number steps from 1. Set `answered_from_memory` to false unless the memory section above
-  already answers the step.
+- Memory: when facts are listed above, make step 1 a memory step covering what they already
+  answer for this purpose: `answered_from_memory: true` with the fact ids it uses in
+  `memory_fact_ids` (numbers only, e.g. [12, 15]). It costs no research. Never re-research what
+  memory answers; spend research steps only on what is missing. Research steps have
+  `answered_from_memory: false` and no fact ids.
+- Number steps from 1.
 
 Reply with one JSON object:
-{"steps": [{"id": 1, "question": "...", "rationale": "...", "suggested_tools": ["web_search", "fetch_page"], "done_criteria": "...", "answered_from_memory": false}], "notes": ""}
+{"steps": [{"id": 1, "question": "...", "rationale": "...", "suggested_tools": ["web_search", "fetch_page"], "done_criteria": "...", "answered_from_memory": false, "memory_fact_ids": []}], "notes": ""}

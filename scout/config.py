@@ -78,9 +78,16 @@ class Settings:
     cache_enabled: bool = True
     cache_ttl_s: float = 24 * 3600.0
 
-    # Memory freshness (docs/SPEC.md §3), used from Phase 3.
-    fact_ttl_days: int = 7
-    news_ttl_days: int = 2
+    # Memory and learning (docs/SPEC.md §3).
+    fact_ttl_days: int = 7  # volatility "stable"
+    news_ttl_days: int = 2  # volatility "news"
+    memory_max_facts: int = 15
+    memory_max_chars: int = 6_000  # ~1.5k tokens of recalled facts in the planner prompt
+    source_rerank_weight: float = 0.5  # max shift 0.25 vs a 0.2 rank step (n=5): ~one place
+    lessons_top_n: int = 3
+    lesson_merge_overlap: float = 0.6
+    reflector_max_lessons: int = 3
+    reflector_max_words: int = 25
 
     # Paths.
     data_dir: Path = REPO_ROOT / "data"
@@ -95,6 +102,11 @@ class Settings:
     def has_tavily(self) -> bool:
         """Whether a Tavily key is configured."""
         return bool(self.tavily_api_key)
+
+    @property
+    def db_path(self) -> Path:
+        """SQLite memory database."""
+        return self.data_dir / "scout.db"
 
     @property
     def cache_dir(self) -> Path:

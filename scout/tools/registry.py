@@ -14,11 +14,12 @@ from dataclasses import dataclass
 from typing import Any, NamedTuple
 
 from scout.config import Settings
+from scout.memory.store import MemoryStore, normalize_entity
 from scout.safety import is_personal_profile
 from scout.schemas import Observation
 from scout.tools.cache import DiskCache
 from scout.tools.fetch_page import fetch_text, focus_text
-from scout.tools.web_search import SearchProvider, SearchResult, web_search
+from scout.tools.web_search import SearchProvider, SearchResult, rerank_by_source, web_search
 
 logger = logging.getLogger(__name__)
 
@@ -73,9 +74,7 @@ class ToolRun(NamedTuple):
 
 def _call_key(name: str, args: dict[str, Any]) -> str:
     """Normalised identity of a tool call, for in-run dedupe."""
-    norm = {
-        k: " ".join(v.lower().split()) if isinstance(v, str) else v for k, v in args.items()
-    }
+    norm = {k: " ".join(v.lower().split()) if isinstance(v, str) else v for k, v in args.items()}
     return f"{name}:{json.dumps(norm, sort_keys=True, default=str)}"
 
 
@@ -86,9 +85,10 @@ class ToolRegistry:
     observation with a note instead of running the tool again (Phase 2, A3).
     """
 
-    def __init__(self, tools: list[Tool]) -> None:
+    def __init__(self, tools: list[Tool], stats: dict[str, int] | None = None) -> None:
         self.tools = {t.name: t for t in tools}
         self._done: dict[str, ToolRun] = {}
+        self.stats = stats if stats is not None else {"cache_hits": 0}
 
     def describe(self, with_thought: bool = False) -> str:
         """All tool signatures, one per line."""
@@ -145,13 +145,16 @@ def build_registry(
     search_providers: list[tuple[str, SearchProvider]] | None = None,
     fetcher: Callable[[str], str] | None = None,
     cache: DiskCache | None = None,
+    store: MemoryStore | None = None,
 ) -> ToolRegistry:
-    """Default registry; tests inject fake search providers, a fake fetcher and a cache.
+    """Default registry; tests inject fake search providers, a fake fetcher, cache and store.
 
-    ``cache`` defaults to a 24 h DiskCache under ``data/cache`` when caching is enabled.
+    ``cache`` defaults to a 24 h DiskCache under ``data/cache`` when caching is enabled. With a
+    ``store``, search results are re-ranked by source reliability and ``recall_memory`` is added.
     """
     if cache is None and settings.cache_enabled:
         cache = DiskCache(settings.cache_dir, settings.cache_ttl_s)
+    stats = {"cache_hits": 0}
 
     def search_tool(query: str, max_results: int = settings.search_max_results) -> ToolOutput:
         n = max(1, min(int(max_results), settings.search_max_results))
@@ -161,6 +164,12 @@ def build_registry(
             results = web_search(query, n, settings=settings, providers=search_providers)
             if cache and results:
                 cache.set("search", key, results)
+        else:
+            stats["cache_hits"] += 1
+        if store is not None:
+            results = rerank_by_source(
+                results, store.source_scores(), settings.source_rerank_weight
+            )
         return ToolOutput(format_search_results(query, results), tuple(r["url"] for r in results))
 
     def fetch_tool(url: str, focus: str = "") -> ToolOutput:
@@ -171,36 +180,72 @@ def build_registry(
             text = fetcher(url) if fetcher else fetch_text(url, settings=settings)
             if cache:
                 cache.set("fetch", url.strip(), text)
+        else:
+            stats["cache_hits"] += 1
         cut = focus_text(text, focus, settings.fetch_max_chars)
         return ToolOutput(wrap_untrusted(cut, url), (url,))
 
-    return ToolRegistry(
-        [
-            Tool(
-                name="web_search",
-                description="Search the web; returns titles, URLs and snippets.",
-                parameters={
-                    "type": "object",
-                    "properties": {
-                        "query": {"type": "string"},
-                        "max_results": {"type": "integer"},
-                    },
-                    "required": ["query"],
+    tools = [
+        Tool(
+            name="web_search",
+            description="Search the web; returns titles, URLs and snippets.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string"},
+                    "max_results": {"type": "integer"},
                 },
-                fn=search_tool,
+                "required": ["query"],
+            },
+            fn=search_tool,
+        ),
+        Tool(
+            name="fetch_page",
+            description=(
+                f"Read a public web page (~{settings.fetch_max_chars} chars of main text, "
+                "the parts most relevant to `focus`)."
             ),
-            Tool(
-                name="fetch_page",
-                description=(
-                    f"Read a public web page (~{settings.fetch_max_chars} chars of main text, "
-                    "the parts most relevant to `focus`)."
-                ),
-                parameters={
-                    "type": "object",
-                    "properties": {"url": {"type": "string"}, "focus": {"type": "string"}},
-                    "required": ["url"],
-                },
-                fn=fetch_tool,
-            ),
-        ]
+            parameters={
+                "type": "object",
+                "properties": {"url": {"type": "string"}, "focus": {"type": "string"}},
+                "required": ["url"],
+            },
+            fn=fetch_tool,
+        ),
+    ]
+    if store is not None:
+        tools.append(_recall_tool(settings, store))
+    return ToolRegistry(tools, stats)
+
+
+def _recall_tool(settings: Settings, store: MemoryStore) -> Tool:
+    """``recall_memory(entity, topic)``: fresh stored facts about an entity, with their sources."""
+
+    def recall_memory(entity: str, topic: str = "") -> ToolOutput:
+        key = normalize_entity(entity)
+        fresh, _ = store.recall(
+            key,
+            settings.fact_ttl_days,
+            settings.news_ttl_days,
+            settings.memory_max_facts,
+            settings.memory_max_chars,
+        )
+        facts = store.search_facts(key, topic, fresh)
+        if not facts:
+            return ToolOutput(f"No fresh facts stored for {entity!r} about {topic!r}.")
+        lines = [f"- {f.claim}\n  URL: {f.source_url}\n  {f.snippet[:200]}" for f in facts]
+        return ToolOutput(
+            wrap_untrusted("\n".join(lines), f"memory: {key}"),
+            tuple(f.source_url for f in facts),
+        )
+
+    return Tool(
+        name="recall_memory",
+        description="Facts Scout already verified in earlier runs (fresh only), with sources.",
+        parameters={
+            "type": "object",
+            "properties": {"entity": {"type": "string"}, "topic": {"type": "string"}},
+            "required": ["entity"],
+        },
+        fn=recall_memory,
     )

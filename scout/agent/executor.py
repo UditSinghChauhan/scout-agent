@@ -23,7 +23,7 @@ from scout.llm import LLM, LLMValidationError
 from scout.playbooks import Playbook
 from scout.prompts import load_prompt
 from scout.safety import is_personal_profile
-from scout.schemas import Action, Evidence, Finding, Observation, Step, StepResult, Task
+from scout.schemas import Action, Evidence, Fact, Finding, Observation, Step, StepResult, Task
 from scout.tools.registry import REPEAT_NOTE, ToolRegistry
 
 logger = logging.getLogger(__name__)
@@ -49,12 +49,17 @@ class EvidenceLedger:
 
     items: list[Evidence] = field(default_factory=list)
 
-    def add(self, finding: Finding, step_id: int) -> Evidence | None:
+    def _duplicate(self, claim: str, url: str) -> bool:
+        """True if the same claim from the same source is already in the ledger."""
+        key = (claim.strip().lower(), normalize_url(url))
+        return any(
+            (i.claim.strip().lower(), normalize_url(i.source_url)) == key for i in self.items
+        )
+
+    def add(self, finding: Finding, step_id: int, topic: str = "") -> Evidence | None:
         """Add a finding as Evidence with the next id; skip exact duplicates."""
-        key = (finding.claim.strip().lower(), normalize_url(finding.source_url))
-        for item in self.items:
-            if (item.claim.strip().lower(), normalize_url(item.source_url)) == key:
-                return None
+        if self._duplicate(finding.claim, finding.source_url):
+            return None
         evidence = Evidence(
             id=f"E{len(self.items) + 1}",
             claim=finding.claim.strip(),
@@ -62,6 +67,28 @@ class EvidenceLedger:
             snippet=finding.snippet.strip()[:500],
             confidence=finding.confidence,
             step_id=step_id,
+            topic=topic,
+            volatility=finding.volatility,
+        )
+        self.items.append(evidence)
+        return evidence
+
+    def add_fact(self, fact: Fact, step_id: int) -> Evidence:
+        """Add a remembered fact as Evidence; it keeps its original source URL for citations."""
+        for item in self.items:
+            if item.fact_id is not None and item.fact_id == fact.id:
+                return item
+        evidence = Evidence(
+            id=f"E{len(self.items) + 1}",
+            claim=fact.claim,
+            source_url=fact.source_url,
+            snippet=fact.snippet,
+            confidence=fact.confidence,
+            step_id=step_id,
+            from_memory=True,
+            fact_id=fact.id,
+            topic=fact.topic,
+            volatility=fact.volatility,
         )
         self.items.append(evidence)
         return evidence
@@ -227,7 +254,7 @@ def execute_step(
         ):
             dropped += 1
             continue
-        item = ledger.add(finding, step.id)
+        item = ledger.add(finding, step.id, topic=step.question[:160])
         if item:
             evidence.append(item)
     if dropped:

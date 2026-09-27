@@ -130,3 +130,25 @@ def web_search(
     if failures and len(failures) == len(chain):
         raise SearchError("All search providers failed: " + "; ".join(failures))
     return []
+
+
+def rerank_by_source(
+    results: list[SearchResult], scores: dict[str, float], weight: float
+) -> list[SearchResult]:
+    """Blend search rank with domain reliability, gently (docs/SPEC.md §3 source reliability).
+
+    Each result gets ``rank_score = (n - i) / n`` (1.0 for the top hit) plus
+    ``weight * (domain_score - 0.5)``; unseen domains are neutral (0.5). With weight 0.5 and five
+    results the largest shift is 0.25, just over one rank step (0.2): a fully trusted domain
+    climbs one place past a neutral neighbour, and a bottom result can never reach the top.
+    """
+    from scout.memory.store import domain_of  # local import: tools must not require memory
+
+    n = len(results)
+    if n < 2 or not scores:
+        return results
+    ranked = [
+        ((n - i) / n + weight * (scores.get(domain_of(r["url"]), 0.5) - 0.5), -i, r)
+        for i, r in enumerate(results)
+    ]
+    return [r for *_, r in sorted(ranked, key=lambda x: (x[0], x[1]), reverse=True)]

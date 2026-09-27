@@ -13,6 +13,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, model_validator
 
 PurposeType = Literal["sales_prospect", "competitor", "interview_prep", "general"]
+Volatility = Literal["stable", "news"]  # time-to-live: stable 7 days, news 2 days
 
 
 def _now() -> datetime:
@@ -35,13 +36,16 @@ class Task(BaseModel):
 class Fact(BaseModel):
     """A stored fact about an entity (row shape of the SQLite ``facts`` table)."""
 
+    id: int | None = None
     entity: str
     topic: str
     claim: str
     source_url: str
+    snippet: str = ""
     captured_at: datetime = Field(default_factory=_now)
     confidence: float = Field(default=0.5, ge=0.0, le=1.0)
     run_id: str | None = None
+    volatility: Volatility = "stable"
 
 
 class Lesson(BaseModel):
@@ -76,6 +80,7 @@ class Step(BaseModel):
     suggested_tools: list[str] = Field(default_factory=list)
     done_criteria: str = ""
     answered_from_memory: bool = False
+    memory_fact_ids: list[int] = Field(default_factory=list)
     is_followup: bool = False
 
 
@@ -93,6 +98,7 @@ class Finding(BaseModel):
     source_url: str
     snippet: str = ""
     confidence: float = Field(default=0.5, ge=0.0, le=1.0)
+    volatility: Volatility = "stable"
 
 
 class Action(BaseModel):
@@ -141,6 +147,9 @@ class Evidence(BaseModel):
     confidence: float = Field(default=0.5, ge=0.0, le=1.0)
     step_id: int | None = None
     from_memory: bool = False
+    fact_id: int | None = None
+    topic: str = ""
+    volatility: Volatility = "stable"
 
 
 class StepResult(BaseModel):
@@ -208,6 +217,9 @@ class RunMetrics(BaseModel):
     flagged_numeric_claims: int = 0
     revised_claims: int = 0
     facts_reused: int = 0
+    memory_steps: int = 0
+    cache_hits: int = 0
+    lessons_injected: int = 0
     budget_exhausted: bool = False
     provider_switches: int = 0
     tokens_by_model: dict[str, int] = Field(default_factory=dict)
