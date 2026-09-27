@@ -1,0 +1,47 @@
+{
+  "run_id": "20260927-165252-222e",
+  "tool_calls": 12,
+  "llm_calls": 30,
+  "prompt_tokens": 34416,
+  "completion_tokens": 6028,
+  "latency_s": 112.0,
+  "citation_coverage": 100.0,
+  "unsupported_claims": 1,
+  "flagged_numeric_claims": 1,
+  "revised_claims": 0,
+  "facts_reused": 0,
+  "memory_steps": 0,
+  "cache_hits": 0,
+  "lessons_injected": 2,
+  "budget_exhausted": true,
+  "provider_switches": 5,
+  "tokens_by_model": {
+    "groq/qwen/qwen3.8-27b": 17065,
+    "groq/openai/gpt-oss-120b": 1526,
+    "groq/openai/gpt-oss-20b": 16083,
+    "gemini/gemini-flash-lite-latest": 5770
+  },
+  "calls_by_model": {
+    "groq/qwen/qwen3.8-27b": 13,
+    "groq/openai/gpt-oss-120b": 1,
+    "groq/openai/gpt-oss-20b": 13,
+    "gemini/gemini-flash-lite-latest": 3
+  },
+  "critique_verdicts": {
+    "complete": 1,
+    "unknown": 3,
+    "followup": 1
+  },
+  "retries": 0,
+  "replans": 1,
+  "total_tokens": 40444,
+  "claims": 9,
+  "cited_claims": 9,
+  "evidence_items": 10,
+  "budget_reason": "tool calls (12)",
+  "injected_lessons": [
+    2,
+    1
+  ],
+  "git_commit": "d22837f"
+}

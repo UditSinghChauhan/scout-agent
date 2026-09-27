@@ -1,6 +1,6 @@
 # Scout eval results
 
-Generated 2026-09-27 11:36 IST by `python -m scout eval --from-runs` from 9 recorded runs.
+Generated 2026-09-27 18:50 IST by `python -m scout eval --from-runs` from 13 recorded runs.
 These are real development runs (Phase 2 onwards: only runs whose trace contains the verifier stage are included), not a curated benchmark. Budgets and code changed between runs; each row's trace is in `runs/` or `examples/`.
 
 ## Summary by purpose
@@ -8,9 +8,9 @@ These are real development runs (Phase 2 onwards: only runs whose trace contains
 | purpose | runs | median tokens | median seconds | mean coverage % | budget stops |
 |---|---|---|---|---|---|
 | competitor | 1 | 33936 | 148.2 | 100.0 | 0 |
-| interview_prep | 3 | 29723 | 56.4 | 100.0 | 1 |
-| sales_prospect | 5 | 44729 | 155.3 | 100.0 | 0 |
-| all | 9 | 33936 | 137.0 | 100.0 | 1 |
+| interview_prep | 5 | 30478 | 99.1 | 100.0 | 2 |
+| sales_prospect | 7 | 40444 | 155.3 | 100.0 | 1 |
+| all | 13 | 38190 | 137.0 | 100.0 | 3 |
 
 ## Per run
 
@@ -27,3 +27,7 @@ These are real development runs (Phase 2 onwards: only runs whose trace contains
 | 20260927-100359-ee0a | sales_prospect | 2026-09-27 10:03 | 6 | 17 | 21352 | 50.2 | 100.0 | 0 | 0 | 0 | 0 | 0 | 6 | no |
 | 20260927-100630-4c66 | interview_prep | 2026-09-27 10:06 | 5 | 16 | 18861 | 32.2 | 100.0 | 0 | 0 | 0 | 0 | 1 | 6 | no |
 | 20260927-102953-e7a8 | interview_prep | 2026-09-27 10:29 | 6 | 22 | 29723 | 56.4 | 100.0 | 3 | 0 | 1 | 0 | 0 | 6 | yes |
+| 20260927-155410-bc87 | sales_prospect | 2026-09-27 15:54 | 9 | 35 | 38866 | 172.8 | 100.0 | 6 | 1 | 0 | 0 | 0 | 3 | no |
+| 20260927-163916-c8fa | interview_prep | 2026-09-27 16:39 | 12 | 31 | 40040 | 203.7 | 100.0 | 2 | 0 | 1 | 0 | 1 | 6 | yes |
+| 20260927-165252-222e | sales_prospect | 2026-09-27 16:52 | 12 | 30 | 40444 | 112.0 | 100.0 | 1 | 1 | 0 | 1 | 0 | 5 | yes |
+| 20260927-175700-2f13 | interview_prep | 2026-09-27 17:57 | 8 | 22 | 30478 | 99.1 | 100.0 | 2 | 0 | 1 | 0 | 1 | 4 | no |

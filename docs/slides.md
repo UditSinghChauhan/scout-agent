@@ -9,6 +9,9 @@ style: |
   table { font-size: 20px; }
   section.tight { font-size: 22px; }
   section.tight h1 { font-size: 38px; }
+  section.dense { font-size: 19px; }
+  section.dense h1 { font-size: 32px; }
+  section.dense table { font-size: 17px; }
 ---
 
 # Scout 🔭
@@ -50,29 +53,31 @@ Hand-written state machine (no framework). The orchestrator is a generator of ev
 
 ---
 
-# Learns with use
+<!-- _class: dense -->
 
-1. **Fact memory**: verified facts with source + freshness (7 d stable, 2 d news) answer steps for free
-2. **Source reliability**: critic ratings + 👍/👎 → `(useful+1)/(useful+useless+2)` re-ranks search
-3. **Strategy lessons**: top 3 per purpose injected into the next plan
+# Learns with use: run 2 → run 4
 
-Same goal ("Prep me for an SDE intern interview at Zoho"), before → after memory:
+Same question twice ("Prep me for an SDE intern interview at Zoho"):
 
-| | tool calls | LLM calls | tokens | seconds |
-|---|---|---|---|---|
-| no memory | 11 | 27 | 38,190 | 122 |
-| 1 step from memory, 6 facts | **5** | **16** | **18,861** | **32** |
+| | tool calls | LLM calls | tokens | seconds | facts reused |
+|---|---|---|---|---|---|
+| run 2 | 12 | 31 | 40,040 | 203.7 | 6 |
+| run 4 | **8** | **22** | **30,478** | **99.1** | **12** |
 
-<!-- DEMO_TABLE: replace with the clean learning_demo.sh numbers -->
+- **Same company, new purpose** (run 1 sales → run 2 interview): memory answered Zoho's basics; the plan researched new questions
+- **New company, lessons applied** (run 3 Freshworks): 2 lessons written by run 1 shaped the plan
+- Fact memory (7 d / 2 d) · source scores `(u+1)/(u+x+2)` · Reflexion lessons
+
+![bg right:36% fit](img/compare.png)
 
 ---
 
 # Results and next steps
 
-- **Evals** (9 recorded runs with the verifier): 100% citation coverage; 13 claims flagged, 5 moved to Unknowns instead of published
+- **Evals** (13 recorded runs with the verifier): 100% citation coverage; 24 claims flagged, 7 moved to Unknowns instead of published
 - **Safety**: untrusted-content wrapping, SSRF guard, roles only (no profiles or contact data), budgets that end in honest partial briefs, traced provider failover
-- **Quality**: 238 offline tests; replayable runs; zero-key example replays
+- **Quality**: 258 offline tests; replayable runs; zero-key example replays and Insights
 
 **Next:** scheduled competitor tracking · vector memory · parallel steps · Scout as an MCP server
 
-**Repo:** `scout-agent` (README → quickstart in 5 commands) · MIT
+**Repo:** github.com/UditSinghChauhan/scout-agent (README → quickstart in 5 commands) · MIT

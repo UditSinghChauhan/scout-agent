@@ -256,7 +256,8 @@ def test_app_insights_defaults_to_recorded_runs(
     assert not at.exception
     assert at.radio(key="insights-source").value.startswith("Recorded runs")
     runs_table = next(df.value for df in at.dataframe if "tool calls" in df.value.columns)
-    assert len(runs_table) == 4 and "Sales prospect" in set(runs_table["purpose"])
+    expected = len([d for d in (REPO / "examples").iterdir() if d.is_dir()])
+    assert len(runs_table) == expected and "Sales prospect" in set(runs_table["purpose"])
     assert any("unstop.com" in t.value.to_string() for t in at.table)  # sources from traces
     plan_md = " ".join(m.value for m in at.markdown)
     assert "🧠 _from memory_" in plan_md  # compare plans rendered

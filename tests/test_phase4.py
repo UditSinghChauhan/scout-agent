@@ -122,6 +122,7 @@ def test_app_replay_smoke(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> No
     shutil.copytree(FIXTURES / "runs" / DEMO_ID, runs_dir / DEMO_ID)
     monkeypatch.setenv("SCOUT_RUNS_DIR", str(runs_dir))
     monkeypatch.setenv("SCOUT_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("SCOUT_EXAMPLES_DIR", str(tmp_path / "no-examples"))
     app = Path(__file__).parent.parent / "app" / "streamlit_app.py"
     at = AppTest.from_file(str(app), default_timeout=60)
     at.run()
@@ -216,6 +217,7 @@ def _app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):  # noqa: ANN202 - App
         shutil.copytree(FIXTURES / "runs" / DEMO_ID, runs_dir / DEMO_ID)
     monkeypatch.setenv("SCOUT_RUNS_DIR", str(runs_dir))
     monkeypatch.setenv("SCOUT_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("SCOUT_EXAMPLES_DIR", str(tmp_path / "no-examples"))
     app = Path(__file__).parent.parent / "app" / "streamlit_app.py"
     return AppTest.from_file(str(app), default_timeout=60)
 
