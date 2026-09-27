@@ -69,3 +69,27 @@ def test_brief_round_trip() -> None:
 def test_run_metrics_total_tokens() -> None:
     m = RunMetrics(run_id="r1", prompt_tokens=10, completion_tokens=5)
     assert m.total_tokens == 15
+
+
+def test_action_accepts_function_call_shape() -> None:
+    action = Action.model_validate_json('{"name": "web_search", "arguments": {"query": "zoho"}}')
+    assert action.type == "tool" and action.tool == "web_search"
+    assert action.args == {"query": "zoho"}
+
+
+def test_action_function_call_finish_and_thought() -> None:
+    action = Action.model_validate(
+        {
+            "name": "finish",
+            "arguments": {
+                "thought": "enough evidence",
+                "findings": [{"claim": "c", "source_url": "https://x.com", "confidence": 0.7}],
+            },
+        }
+    )
+    assert action.type == "finish" and action.thought == "enough evidence"
+    assert action.findings[0].source_url == "https://x.com"
+    tool = Action.model_validate(
+        {"name": "fetch_page", "arguments": {"thought": "read it", "url": "https://x.com"}}
+    )
+    assert tool.thought == "read it" and tool.args == {"url": "https://x.com"}

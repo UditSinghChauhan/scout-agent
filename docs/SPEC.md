@@ -8,6 +8,15 @@ Challenge context. Techvruk contest hosted by Tryneu Global Solution, 15 interns
 
 Why Scout wins, criterion by criterion
 
+| Judging criterion | How Scout proves it |
+| --- | --- |
+| LLM reasoning and prompting | Separate role prompts (planner, executor, critic, synthesizer, reflector), structured JSON outputs validated by Pydantic, automatic repair on malformed output |
+| Agentic design patterns | Plan-and-Execute outer loop, ReAct inner loop per step, critic-driven replanning, Reflexion-style lessons, tool use |
+| Workflow orchestration | Explicit state machine with conditional routing: continue, retry with a new approach, add a follow-up step, or mark unknown |
+| Practical integration | Live web search with a fallback provider, page fetch and extraction, SQLite memory, CLI and Streamlit UI |
+| "Gets better with use" | Fact cache with freshness, source reliability scores, lessons injected into future plans, run metrics that prove the improvement |
+| "Research dynamically by purpose" | Same company, different purpose → visibly different plan, tools and output format |
+
 ## SECTION 3. PRODUCT SPEC
 
 One text goal in, one cited brief out, shaped by one of three purpose playbooks (plus a general fallback), with three memory mechanisms that make the next run better.

@@ -10,7 +10,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 PurposeType = Literal["sales_prospect", "competitor", "interview_prep", "general"]
 
@@ -98,11 +98,27 @@ class Finding(BaseModel):
 class Action(BaseModel):
     """One ReAct iteration: call a tool, or finish the step with findings."""
 
-    thought: str
+    thought: str = ""
     type: Literal["tool", "finish"]
     tool: str | None = None
     args: dict[str, Any] = Field(default_factory=dict)
     findings: list[Finding] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _accept_function_call_shape(cls, data: Any) -> Any:
+        """Accept native function-call style ``{"name", "arguments"}`` as an action.
+
+        ``finish`` maps to a finish action; any other name is a tool call. A ``thought`` inside
+        the arguments is lifted out so the trace still shows the model's reasoning.
+        """
+        if not (isinstance(data, dict) and "type" not in data and "name" in data):
+            return data
+        args = dict(data.get("arguments") or data.get("args") or {})
+        thought = str(args.pop("thought", data.get("thought", "")))
+        if data["name"] == "finish":
+            return {"thought": thought, "type": "finish", "findings": args.get("findings", [])}
+        return {"thought": thought, "type": "tool", "tool": data["name"], "args": args}
 
 
 class Observation(BaseModel):

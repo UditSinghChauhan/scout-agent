@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import httpx2
 import openai
 import pytest
 from pydantic import BaseModel
@@ -22,10 +21,16 @@ class Company(BaseModel):
     founded: int
 
 
-def _status_error(cls: type[openai.APIStatusError], code: int, **headers: str) -> Exception:
-    request = httpx2.Request("POST", "https://llm.example/v1/chat/completions")
-    response = httpx2.Response(code, request=request, headers=headers)
-    return cls("boom", response=response, body=None)
+def _sdk_error(cls: type[openai.OpenAIError], **attrs: object) -> Exception:
+    """Instantiate an openai SDK exception without its HTTP-client-specific constructor."""
+    err = cls.__new__(cls)
+    for name, value in attrs.items():
+        setattr(err, name, value)
+    return err
+
+
+def _status_error(cls: type[openai.APIStatusError], code: int) -> Exception:
+    return _sdk_error(cls, status_code=code)
 
 
 def test_complete_json_valid_first_try() -> None:
@@ -129,9 +134,8 @@ def test_is_transient_for_sdk_errors(
 
 
 def test_connection_errors_are_transient() -> None:
-    request = httpx2.Request("POST", "https://llm.example/v1")
-    assert is_transient(openai.APITimeoutError(request=request))
-    assert is_transient(openai.APIConnectionError(request=request))
+    assert is_transient(_sdk_error(openai.APITimeoutError))
+    assert is_transient(_sdk_error(openai.APIConnectionError))
 
 
 def test_token_counting_accumulates() -> None:
@@ -155,3 +159,31 @@ def test_missing_api_key_raises_without_leaking() -> None:
     llm = LLM(settings=Settings(scout_model="m"))
     with pytest.raises(LLMError, match="LLM_API_KEY"):
         llm.complete([{"role": "user", "content": "x"}])
+
+
+def test_daily_quota_429_is_not_retried() -> None:
+    err = _sdk_error(openai.RateLimitError, status_code=429)
+    err.args = ("Quota exceeded: GenerateRequestsPerDayPerProjectPerModel-FreeTier",)
+    assert is_transient(err) is False
+    minute = _sdk_error(openai.RateLimitError, status_code=429)
+    minute.args = ("Rate limit reached on tokens per minute (TPM)",)
+    assert is_transient(minute) is True
+
+
+def test_rejected_native_tool_call_is_returned_as_text() -> None:
+    from scout.llm import rejected_generation
+
+    err = _sdk_error(openai.BadRequestError, status_code=400)
+    err.body = {
+        "error": {
+            "code": "tool_use_failed",
+            "failed_generation": '{"name": "web_search", "arguments": {"query": "zoho"}}',
+        }
+    }
+    assert rejected_generation(err) == '{"name": "web_search", "arguments": {"query": "zoho"}}'
+    empty = _sdk_error(openai.BadRequestError, status_code=400)
+    empty.body = {"error": {"code": "json_validate_failed", "failed_generation": ""}}
+    assert rejected_generation(empty) == ""
+    other = _sdk_error(openai.BadRequestError, status_code=400)
+    other.body = {"error": {"code": "invalid_request_error"}}
+    assert rejected_generation(other) is None

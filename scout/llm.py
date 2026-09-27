@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
@@ -34,6 +35,9 @@ _REPAIR_INSTRUCTION = (
     "Reply again with only the corrected JSON object."
 )
 _MAX_ERROR_CHARS = 2_000
+_RETRY_IN_RE = re.compile(r"retry in ([0-9.]+)\s*s", re.IGNORECASE)
+_REJECTED_GENERATION_CODES = {"tool_use_failed", "json_validate_failed"}
+_DAILY_QUOTA_RE = re.compile(r"per ?day|RPD\b", re.IGNORECASE)
 
 
 class LLMError(Exception):
@@ -128,24 +132,55 @@ def estimate_tokens(text: str) -> int:
     return max(1, len(text) // 4) if text else 0
 
 
+def is_daily_quota(exc: Exception) -> bool:
+    """True for a 429 caused by a per-day quota: retrying within the run cannot help."""
+    return (
+        isinstance(exc, openai.APIStatusError)
+        and exc.status_code == 429
+        and bool(_DAILY_QUOTA_RE.search(str(exc)))
+    )
+
+
 def is_transient(exc: Exception) -> bool:
     """Return True for OpenAI SDK errors worth retrying: 429, 5xx, connection or timeout."""
     if isinstance(exc, openai.APIConnectionError):
         return True
     if isinstance(exc, openai.APIStatusError):
+        if is_daily_quota(exc):
+            return False
         return exc.status_code == 429 or exc.status_code >= 500
     return False
 
 
+def rejected_generation(exc: Exception) -> str | None:
+    """Model output the provider refused on its own validation, or None for other errors.
+
+    Groq answers 400 ``tool_use_failed`` when a model (e.g. gpt-oss) emits a native tool call,
+    and ``json_validate_failed`` when JSON mode output does not parse; either way the output (maybe
+    empty) is in ``failed_generation``. Returning it lets ``complete_json`` validate it and send
+    its single repair request instead of failing the whole step.
+    """
+    if not isinstance(exc, openai.BadRequestError) or not isinstance(exc.body, dict):
+        return None
+    error = exc.body.get("error", exc.body)
+    if not isinstance(error, dict) or error.get("code") not in _REJECTED_GENERATION_CODES:
+        return None
+    generation = error.get("failed_generation")
+    return generation if isinstance(generation, str) else ""
+
+
 def _retry_after(exc: Exception) -> float | None:
-    """Read a numeric Retry-After header from an SDK status error, if present."""
+    """Retry delay from the Retry-After header, or a "retry in Ns" hint in the error message."""
     if not isinstance(exc, openai.APIStatusError):
         return None
     value = exc.response.headers.get("retry-after")
     try:
-        return float(value) if value is not None else None
+        if value is not None:
+            return float(value)
     except ValueError:
-        return None
+        pass
+    match = _RETRY_IN_RE.search(str(exc))
+    return float(match.group(1)) if match else None
 
 
 class OpenAIBackend:
@@ -180,9 +215,16 @@ class OpenAIBackend:
                 **extra,
             )
         except openai.OpenAIError as exc:
+            rejected = rejected_generation(exc)
+            if rejected is not None:
+                logger.info("Provider rejected a native tool call; using its text as the reply")
+                prompt = sum(estimate_tokens(m.get("content", "")) for m in messages)
+                return ChatResult(rejected, prompt, estimate_tokens(rejected), estimated=True)
             if is_transient(exc):
                 raise TransientLLMError(type(exc).__name__, _retry_after(exc)) from exc
-            raise LLMError(f"{type(exc).__name__}: {exc}") from exc
+            if is_daily_quota(exc):
+                raise LLMError(f"Daily quota exhausted for model {model}") from exc
+            raise LLMError(f"{type(exc).__name__}: {str(exc)[:300]}") from exc
         text = (response.choices[0].message.content or "") if response.choices else ""
         usage = response.usage
         if usage is None:
@@ -314,9 +356,10 @@ class LLM:
         except ValidationError as exc:
             errors = format_validation_error(exc)
             logger.info("complete_json: %s failed validation, sending repair", schema.__name__)
+        previous = [{"role": "assistant", "content": raw}] if raw.strip() else []
         repair = [
             *msgs,
-            {"role": "assistant", "content": raw},
+            *previous,
             {"role": "user", "content": _REPAIR_INSTRUCTION.format(errors=errors)},
         ]
         raw = self.complete(repair, fast=fast, model=model, json_mode=json_mode)
