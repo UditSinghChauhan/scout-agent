@@ -39,8 +39,6 @@ python -m scout ui          # then open http://localhost:8501
 
 **No API key is needed to replay the example runs**: pick any `example · …` run in the sidebar. Live runs need a Groq and/or Gemini key in `.env` (free tiers work). From the terminal: `python -m scout run "Prep me for an SDE intern interview at Zoho."`.
 
-**Deploy on Streamlit Community Cloud:** new app → this repo, branch `main`, main file `app/streamlit_app.py`, Python 3.12. With no secrets it runs in replay mode (the example runs and Insights work, no quota is spent). To allow live runs, add `GROQ_API_KEY` / `GEMINI_API_KEY` under *Secrets*; Streamlit exposes top-level secrets as environment variables, which is where [`config.py`](scout/config.py) reads them.
-
 ### Repository map
 
 ```text
