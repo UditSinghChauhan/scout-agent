@@ -204,9 +204,17 @@ class RunMetrics(BaseModel):
     completion_tokens: int = 0
     latency_s: float = 0.0
     citation_coverage: float = Field(default=0.0, ge=0.0, le=100.0, description="Percent.")
-    unsupported_claims: int = 0
+    unsupported_claims: int = Field(default=0, description="Claims moved to Unknowns.")
+    flagged_numeric_claims: int = 0
+    revised_claims: int = 0
     facts_reused: int = 0
     budget_exhausted: bool = False
+    provider_switches: int = 0
+    tokens_by_model: dict[str, int] = Field(default_factory=dict)
+    calls_by_model: dict[str, int] = Field(default_factory=dict)
+    critique_verdicts: dict[str, int] = Field(default_factory=dict)
+    retries: int = 0
+    replans: int = 0
 
     @property
     def total_tokens(self) -> int:

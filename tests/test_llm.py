@@ -58,7 +58,7 @@ def test_complete_json_repairs_malformed_output() -> None:
     assert fake.calls == 2
     repair_msgs = fake.requests[1].messages
     assert repair_msgs[-2] == {"role": "assistant", "content": "this is not json"}
-    assert "did not validate" in repair_msgs[-1]["content"]
+    assert "not a valid JSON object" in repair_msgs[-1]["content"]
 
 
 def test_repair_message_contains_validation_error() -> None:

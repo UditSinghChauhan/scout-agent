@@ -68,5 +68,6 @@ def make_plan(
     plan = llm.complete_json(
         [{"role": "system", "content": prompt}, {"role": "user", "content": "Write the plan."}],
         ResearchPlan,
+        include_schema=False,
     )
     return normalize_plan(plan, settings.max_planned_steps)

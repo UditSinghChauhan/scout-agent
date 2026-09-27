@@ -30,6 +30,9 @@ EventType = Literal[
     "lesson_learned",
     "run_finished",
     "error",
+    "retry",
+    "provider_switched",
+    "llm_call",
 ]
 
 

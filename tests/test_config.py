@@ -7,15 +7,18 @@ import pytest
 from scout.config import Settings, env_name, load_settings, read_env_file
 
 
-def test_budget_defaults_match_spec() -> None:
+def test_budget_defaults() -> None:
+    # SPEC §4 budgets, with the Phase 2 token-diet overrides (5 steps, 3 iterations, 480 s).
     s = load_settings(env={}, env_file=None)
-    assert s.max_planned_steps == 6
+    assert s.max_planned_steps == 5
     assert s.max_total_steps == 8
-    assert s.max_react_iterations == 4
+    assert s.max_react_iterations == 3
     assert s.max_tool_calls == 30
     assert s.max_llm_calls == 60
-    assert s.max_wall_clock_s == 240.0
+    assert s.max_wall_clock_s == 480.0
     assert s.fetch_timeout_s == 15.0
+    assert s.fetch_max_chars == 2_000 and s.search_snippet_chars == 200
+    assert s.max_followups == 1
     assert s.fact_ttl_days == 7 and s.news_ttl_days == 2
 
 

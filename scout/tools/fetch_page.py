@@ -194,15 +194,14 @@ def focus_text(text: str, focus: str, max_chars: int) -> str:
     return "\n\n".join(chunks[i] for i in sorted(chosen))
 
 
-def fetch_page(
+def fetch_text(
     url: str,
-    focus: str = "",
     *,
     settings: Settings | None = None,
     client: httpx.Client | None = None,
     resolver: Resolver = resolve_host,
 ) -> str:
-    """Fetch ``url`` safely and return focus-relevant extracted text (~``fetch_max_chars``).
+    """Fetch ``url`` safely and return all extracted text (no focus cut).
 
     Raises :class:`BlockedURLError` for unsafe URLs and :class:`FetchError` for network errors,
     timeouts, bad status codes, unsupported content or pages with no extractable text.
@@ -225,4 +224,18 @@ def fetch_page(
     text = extract_text(body, final_url, content_type)
     if not text:
         raise FetchError(f"No extractable text at {final_url}")
+    return text
+
+
+def fetch_page(
+    url: str,
+    focus: str = "",
+    *,
+    settings: Settings | None = None,
+    client: httpx.Client | None = None,
+    resolver: Resolver = resolve_host,
+) -> str:
+    """Fetch ``url`` safely and return focus-relevant extracted text (~``fetch_max_chars``)."""
+    settings = settings or load_settings()
+    text = fetch_text(url, settings=settings, client=client, resolver=resolver)
     return focus_text(text, focus, settings.fetch_max_chars)

@@ -1,34 +1,55 @@
 """Orchestrator: Scout's explicit state machine, written as an event generator (docs/SPEC.md §4).
 
-Phase 1 flow: Intake -> (Recall) -> Plan -> Execute each step -> Synthesize -> (Verify)
--> (Reflect). Bracketed stages are seams filled in later phases. Budgets from config are enforced
+Flow: Intake -> (Recall) -> Plan -> [Execute -> Critique]* -> Synthesize -> Verify -> (Reflect).
+The critic routes each step: ``complete`` moves on, ``retry`` re-runs the step once with the
+critic's new approach, ``followup`` appends one new step (replan, max ``max_followups`` per run),
+``unknown`` records the question for the Unknowns section. Budgets from config are enforced
 throughout; on a budget hit Scout synthesizes from the evidence it has. Exceptions become
-``error`` events; ``run_orchestrator`` always ends with ``run_finished``.
+``error`` events; ``run`` always ends with ``run_finished``. Router notices (provider switches,
+per-call provider/model) are turned into ``provider_switched`` and ``llm_call`` events.
 """
 
 from __future__ import annotations
 
 import logging
-import time
 import uuid
-from collections.abc import Iterator
+from collections import Counter
+from collections.abc import Generator, Iterator
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any
+from typing import Any, TypeVar
 
 from scout.agent.budget import Budget
+from scout.agent.critic import critique_step
 from scout.agent.executor import EvidenceLedger, execute_step
 from scout.agent.intake import run_intake
 from scout.agent.planner import fallback_plan, make_plan
 from scout.agent.synthesizer import citation_stats, fallback_brief, render_markdown, synthesize
+from scout.agent.verifier import (
+    apply_revisions,
+    find_issues,
+    move_to_unknowns,
+    revise_claims,
+)
 from scout.config import Settings
 from scout.events import Event, EventType
-from scout.llm import LLM
+from scout.llm import LLM, DeadlineExceededError
 from scout.playbooks import Playbook, get_playbook
-from scout.schemas import Brief, MemoryContext, ResearchPlan, RunMetrics, StepResult, Task
+from scout.safety import scrub_brief
+from scout.schemas import (
+    Brief,
+    Critique,
+    MemoryContext,
+    ResearchPlan,
+    RunMetrics,
+    Step,
+    StepResult,
+    Task,
+)
 from scout.tools.registry import ToolRegistry, build_registry
 
 logger = logging.getLogger(__name__)
+T = TypeVar("T")
 
 
 def new_run_id() -> str:
@@ -48,8 +69,15 @@ class RunState:
     plan: ResearchPlan | None = None
     results: list[StepResult] = field(default_factory=list)
     ledger: EvidenceLedger = field(default_factory=EvidenceLedger)
+    critiques: list[Critique] = field(default_factory=list)
+    critic_unknowns: list[str] = field(default_factory=list)
+    retries: int = 0
+    followups: int = 0
     brief: Brief | None = None
     report_md: str = ""
+    flagged_numeric: list[str] = field(default_factory=list)
+    unsupported: int = 0
+    revised: int = 0
     stage: str = "intake"
 
 
@@ -67,12 +95,38 @@ class Orchestrator:
         self.llm = llm or LLM(settings=settings)
         self.registry = registry or build_registry(settings)
         self.run_id = run_id or new_run_id()
-        self.budget = Budget(settings, self.llm)
-        self._started = time.monotonic()
+        self.clock = self.llm._clock
+        self.budget = Budget(settings, self.llm, clock=self.clock)
+        self._started = self.clock()
+        self._switches = 0
+        # A4: backoff waits never overshoot the wall clock.
+        self.llm.deadline = self._started + settings.max_wall_clock_s
+
+    # --- events -----------------------------------------------------------------------------
 
     def _event(self, stage: str, type_: EventType, payload: dict[str, Any] | None = None) -> Event:
         """Create an event for this run."""
         return Event(run_id=self.run_id, stage=stage, type=type_, payload=payload or {})
+
+    def _notices(self, stage: str) -> Iterator[Event]:
+        """Turn pending LLM notices (calls, provider switches) into events."""
+        for type_, payload in self.llm.drain_notices():
+            if type_ == "provider_switched":
+                self._switches += 1
+            yield self._event(stage, type_, payload)  # type: ignore[arg-type]
+
+    def _pump(self, gen: Generator[Event, None, T], stage: str) -> Generator[Event, None, T]:
+        """Relay a stage generator's events, inserting LLM notices; return its value."""
+        while True:
+            try:
+                event = next(gen)
+            except StopIteration as stop:
+                yield from self._notices(stage)
+                return stop.value
+            yield from self._notices(stage)
+            yield event
+
+    # --- run --------------------------------------------------------------------------------
 
     def run(self, goal: str, user_context: str | None = None) -> Iterator[Event]:
         """Execute the workflow; always ends with a ``run_finished`` event."""
@@ -89,6 +143,7 @@ class Orchestrator:
         except Exception as exc:  # noqa: BLE001 - never crash the run
             logger.exception("Unhandled error in stage %s", state.stage)
             yield self._event(state.stage, "error", {"message": f"{type(exc).__name__}: {exc}"})
+        yield from self._notices(state.stage)
         yield self._finish(state)
 
     # --- stages -----------------------------------------------------------------------------
@@ -99,8 +154,10 @@ class Orchestrator:
         try:
             state.task = run_intake(self.llm, state.goal, user_context)
         except Exception as exc:  # noqa: BLE001
+            yield from self._notices("intake")
             yield self._event("intake", "error", {"message": f"Intake failed: {exc}"})
             return
+        yield from self._notices("intake")
         state.playbook = get_playbook(state.task.purpose_type)
 
     def _recall(self, state: RunState) -> Iterator[Event]:
@@ -123,10 +180,12 @@ class Orchestrator:
                 self.registry.describe(),
             )
         except Exception as exc:  # noqa: BLE001
+            yield from self._notices("plan")
             yield self._event(
                 "plan", "error", {"message": f"Planner failed, using fallback: {exc}"}
             )
             state.plan = fallback_plan(state.task, state.playbook, self.settings.max_planned_steps)
+        yield from self._notices("plan")
         yield self._event(
             "plan",
             "plan_created",
@@ -137,17 +196,61 @@ class Orchestrator:
             },
         )
 
+    def _budget_ok(self) -> bool:
+        """True if another step (LLM + tool calls) fits the budget."""
+        return self.budget.llm_available() and self.budget.tool_available()
+
     def _execute(self, state: RunState) -> Iterator[Event]:
         state.stage = "execute"
-        assert state.task is not None and state.playbook is not None and state.plan is not None
-        steps = state.plan.steps[: self.settings.max_total_steps]
-        for step in steps:
-            if not (self.budget.llm_available() and self.budget.tool_available()):
+        assert state.plan is not None
+        steps: list[Step] = list(state.plan.steps[: self.settings.max_total_steps])
+        index = 0
+        while index < len(steps) and self._budget_ok():
+            step = steps[index]
+            approach: str | None = None
+            for attempt in range(1 + self.settings.max_retries_per_step):
+                result = yield from self._run_step(state, step, approach)
+                if result is None:
+                    return  # wall clock hit inside the step
+                critique = yield from self._critique(state, step, result)
+                if critique is None or critique.verdict == "complete":
+                    break
+                if critique.verdict == "unknown":
+                    state.critic_unknowns.append(step.question)
+                    break
+                if critique.verdict == "followup":
+                    yield from self._add_followup(state, steps, critique)
+                    break
+                # retry
+                if (
+                    attempt >= self.settings.max_retries_per_step
+                    or state.retries >= self.settings.max_retries_per_run
+                    or not self._budget_ok()
+                ):
+                    break
+                approach = critique.new_approach or "use a different query or source"
+                state.retries += 1
+                yield self._event(
+                    "execute", "retry", {"step_id": step.id, "new_approach": approach}
+                )
+            if self.budget.exhausted_reason:
                 break
-            yield self._event("execute", "step_started", step.model_dump())
-            emit = lambda type_, payload: self._event("execute", type_, payload)  # noqa: E731
-            try:
-                result = yield from execute_step(
+            index += 1
+        state.plan = state.plan.model_copy(update={"steps": steps})
+
+    def _run_step(
+        self, state: RunState, step: Step, approach: str | None
+    ) -> Generator[Event, None, StepResult | None]:
+        """Execute one step; None if the wall clock ran out mid-step."""
+        assert state.task is not None and state.playbook is not None
+        yield self._event("execute", "step_started", {**step.model_dump(), "approach": approach})
+
+        def emit(type_: EventType, payload: dict[str, Any]) -> Event:
+            return self._event("execute", type_, payload)
+
+        try:
+            result = yield from self._pump(
+                execute_step(
                     step,
                     task=state.task,
                     playbook=state.playbook,
@@ -157,22 +260,80 @@ class Orchestrator:
                     settings=self.settings,
                     ledger=state.ledger,
                     emit=emit,
-                )
-            except Exception as exc:  # noqa: BLE001 - one failed step must not end the run
-                yield self._event("execute", "error", {"step_id": step.id, "message": str(exc)})
-                continue
-            state.results.append(result)
-            yield from self._critique(state, result)
-            if self.budget.exhausted_reason:
-                break
+                    approach=approach,
+                ),
+                "execute",
+            )
+        except DeadlineExceededError as exc:
+            self.budget.exhausted_reason = f"wall clock ({self.settings.max_wall_clock_s:.0f}s)"
+            yield from self._notices("execute")
+            yield self._event("execute", "error", {"step_id": step.id, "message": str(exc)})
+            return None
+        except Exception as exc:  # noqa: BLE001 - one failed step must not end the run
+            yield from self._notices("execute")
+            yield self._event("execute", "error", {"step_id": step.id, "message": str(exc)})
+            return StepResult(step_id=step.id, status="error")
+        state.results.append(result)
+        return result
 
-    def _critique(self, state: RunState, result: StepResult) -> Iterator[Event]:
-        """Seam for Phase 2 critic routing (retry / followup / unknown). Always 'next' for now."""
-        yield from ()
+    def _critique(
+        self, state: RunState, step: Step, result: StepResult
+    ) -> Generator[Event, None, Critique | None]:
+        """Ask the critic for a verdict; None when the budget leaves no room for it."""
+        assert state.playbook is not None
+        if not self.budget.llm_available():
+            return None
+        try:
+            critique = critique_step(self.llm, step, result, state.playbook)
+        except DeadlineExceededError:
+            self.budget.exhausted_reason = f"wall clock ({self.settings.max_wall_clock_s:.0f}s)"
+            yield from self._notices("critique")
+            return None
+        except Exception as exc:  # noqa: BLE001
+            yield from self._notices("critique")
+            yield self._event("critique", "error", {"step_id": step.id, "message": str(exc)})
+            return None
+        yield from self._notices("critique")
+        state.critiques.append(critique)
+        yield self._event(
+            "critique",
+            "critique",
+            {
+                "step_id": step.id,
+                "verdict": critique.verdict,
+                "reason": critique.reason,
+                "new_approach": critique.new_approach,
+                "followup": critique.followup.question if critique.followup else None,
+                "evidence": len(result.evidence),
+                "source_ratings": critique.source_ratings,
+            },
+        )
+        return critique
+
+    def _add_followup(
+        self, state: RunState, steps: list[Step], critique: Critique
+    ) -> Iterator[Event]:
+        """Append the critic's follow-up step if the follow-up and step caps allow (replan)."""
+        if (
+            critique.followup is None
+            or state.followups >= self.settings.max_followups
+            or len(steps) >= self.settings.max_total_steps
+        ):
+            return
+        new_step = critique.followup.model_copy(update={"id": len(steps) + 1, "is_followup": True})
+        steps.append(new_step)
+        state.followups += 1
+        yield self._event(
+            "plan", "replan", {"added_step": new_step.model_dump(), "reason": critique.reason}
+        )
 
     def _synthesize(self, state: RunState) -> Iterator[Event]:
         state.stage = "synthesize"
         assert state.task is not None and state.playbook is not None
+        # Synthesis always runs; it gets a short grace period past the wall clock.
+        self.llm.deadline = (
+            self._started + self.settings.max_wall_clock_s + self.settings.synthesis_grace_s
+        )
         note = self.budget.exhausted_reason
         if note:
             note = f"budget reached: {note}"
@@ -182,17 +343,55 @@ class Orchestrator:
             {"evidence": len(state.ledger.items), "budget_note": note},
         )
         try:
-            state.brief = synthesize(self.llm, state.task, state.playbook, state.ledger, note)
+            state.brief = synthesize(
+                self.llm, state.task, state.playbook, state.ledger, note, state.critic_unknowns
+            )
         except Exception as exc:  # noqa: BLE001
+            yield from self._notices("synthesize")
             yield self._event("synthesize", "error", {"message": f"Synthesis failed: {exc}"})
             state.brief = fallback_brief(state.task, state.playbook, state.ledger, note)
-        state.report_md = render_markdown(state.brief, state.ledger, self.run_id)
+        yield from self._notices("synthesize")
         cited, total = citation_stats(state.brief, state.ledger)
         yield self._event("synthesize", "synthesis", {"claims": total, "cited_claims": cited})
 
     def _verify(self, state: RunState) -> Iterator[Event]:
-        """Seam for Phase 2 deterministic verifier."""
-        yield from ()
+        """Deterministic claim checks, one revision pass, then move leftovers to Unknowns."""
+        state.stage = "verify"
+        assert state.brief is not None
+        issues = find_issues(state.brief, state.ledger)
+        state.flagged_numeric = [i.text for i in issues if i.kind == "numeric"]
+        before = len(issues)
+        if issues and self.budget.llm.usage.llm_calls < self.settings.max_llm_calls:
+            try:
+                revisions = revise_claims(self.llm, issues, state.ledger)
+                state.brief = apply_revisions(state.brief, revisions)
+                state.revised = len(revisions.revisions)
+            except Exception as exc:  # noqa: BLE001 - fall through to moving claims
+                yield from self._notices("verify")
+                yield self._event("verify", "error", {"message": f"Revision failed: {exc}"})
+            yield from self._notices("verify")
+            issues = find_issues(state.brief, state.ledger)
+        if issues:
+            state.brief = move_to_unknowns(state.brief, issues)
+        missing = [f"Not found: {q}" for q in state.critic_unknowns]
+        extra = [m for m in missing if m not in state.brief.unknowns]
+        if extra:
+            state.brief = state.brief.model_copy(
+                update={"unknowns": list(state.brief.unknowns) + extra}
+            )
+        state.unsupported = len(issues)
+        state.brief = scrub_brief(state.brief)
+        state.report_md = render_markdown(state.brief, state.ledger, self.run_id)
+        yield self._event(
+            "verify",
+            "verification",
+            {
+                "flagged": before,
+                "flagged_numeric": state.flagged_numeric,
+                "revised": state.revised,
+                "moved_to_unknowns": [i.text for i in issues],
+            },
+        )
 
     def _reflect(self, state: RunState) -> Iterator[Event]:
         """Seam for Phase 3 reflector (lessons, persistence)."""
@@ -204,15 +403,27 @@ class Orchestrator:
         """Collect run metrics."""
         cited, total = citation_stats(state.brief, state.ledger) if state.brief else (0, 0)
         usage = self.llm.usage
+        calls_by_model = Counter(
+            f"{c.provider}/{c.model}" if c.provider else c.model for c in usage.calls
+        )
         return RunMetrics(
             run_id=self.run_id,
             tool_calls=self.budget.tool_calls,
             llm_calls=usage.llm_calls,
             prompt_tokens=usage.prompt_tokens,
             completion_tokens=usage.completion_tokens,
-            latency_s=round(time.monotonic() - self._started, 1),
+            latency_s=round(self.clock() - self._started, 1),
             citation_coverage=round(100.0 * cited / total, 1) if total else 0.0,
+            unsupported_claims=state.unsupported,
+            flagged_numeric_claims=len(state.flagged_numeric),
+            revised_claims=state.revised,
             budget_exhausted=self.budget.exhausted_reason is not None,
+            provider_switches=self._switches,
+            tokens_by_model=usage.tokens_by_model(),
+            calls_by_model=dict(calls_by_model),
+            critique_verdicts=dict(Counter(c.verdict for c in state.critiques)),
+            retries=state.retries,
+            replans=state.followups,
         )
 
     def _finish(self, state: RunState) -> Event:

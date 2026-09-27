@@ -31,12 +31,15 @@ _JSON_INSTRUCTION = (
     "It must validate against this JSON Schema:\n{schema}"
 )
 _REPAIR_INSTRUCTION = (
-    "Your previous reply did not validate against the required JSON Schema. Errors:\n{errors}\n"
+    "Your previous reply was not a valid JSON object of the required shape. Errors:\n{errors}\n"
     "Reply again with only the corrected JSON object."
 )
 _MAX_ERROR_CHARS = 2_000
-_RETRY_IN_RE = re.compile(r"retry in ([0-9.]+)\s*s", re.IGNORECASE)
+_WAIT_RE = re.compile(
+    r"(?:retry|try again) in\s+((?:\d+h)?\s*(?:\d+m(?!s))?\s*(?:[\d.]+s)?)", re.IGNORECASE
+)
 _REJECTED_GENERATION_CODES = {"tool_use_failed", "json_validate_failed"}
+_LIMIT_KIND_RE = re.compile(r"on ((?:tokens|requests) per \w+ \(\w+\))", re.IGNORECASE)
 _DAILY_QUOTA_RE = re.compile(r"per ?day|RPD\b", re.IGNORECASE)
 
 
@@ -50,6 +53,22 @@ class TransientLLMError(LLMError):
     def __init__(self, message: str, retry_after: float | None = None) -> None:
         super().__init__(message)
         self.retry_after = retry_after
+
+
+class QuotaExhaustedError(LLMError):
+    """A daily (or other long-window) quota is used up; ``reset_after`` seconds if known."""
+
+    def __init__(self, message: str, reset_after: float | None = None) -> None:
+        super().__init__(message)
+        self.reset_after = reset_after
+
+
+class CandidateUnavailableError(LLMError):
+    """401/403/404: this provider or model cannot be used in this run."""
+
+
+class DeadlineExceededError(LLMError):
+    """Waiting for the provider would overshoot the run's wall-clock budget."""
 
 
 class LLMValidationError(LLMError):
@@ -68,10 +87,16 @@ class ChatResult:
     prompt_tokens: int
     completion_tokens: int
     estimated: bool = False
+    provider: str = ""
+    model: str = ""
 
 
 class ChatBackend(Protocol):
-    """Minimal transport the wrapper needs; implemented by OpenAIBackend and FakeLLM."""
+    """Minimal transport the wrapper needs; implemented by OpenAIBackend, RouterBackend, FakeLLM.
+
+    ``tier`` is "smart" (planner, synthesizer, reflector) or "fast" (executor, critic); a router
+    uses it to pick a model, a single-provider backend ignores it.
+    """
 
     def chat(
         self,
@@ -80,6 +105,7 @@ class ChatBackend(Protocol):
         messages: Sequence[Message],
         json_mode: bool,
         temperature: float,
+        tier: str = "smart",
     ) -> ChatResult:
         """Send one chat request and return the reply."""
         ...
@@ -94,6 +120,8 @@ class CallRecord:
     completion_tokens: int
     latency_s: float
     estimated: bool
+    provider: str = ""
+    tier: str = "smart"
 
 
 @dataclass
@@ -122,6 +150,14 @@ class UsageTracker:
         """Prompt plus completion tokens."""
         return self.prompt_tokens + self.completion_tokens
 
+    def tokens_by_model(self) -> dict[str, int]:
+        """Total tokens per ``provider/model``."""
+        totals: dict[str, int] = {}
+        for c in self.calls:
+            key = f"{c.provider}/{c.model}" if c.provider else c.model
+            totals[key] = totals.get(key, 0) + c.prompt_tokens + c.completion_tokens
+        return totals
+
     def reset(self) -> None:
         """Forget all recorded calls."""
         self.calls.clear()
@@ -139,6 +175,11 @@ def is_daily_quota(exc: Exception) -> bool:
         and exc.status_code == 429
         and bool(_DAILY_QUOTA_RE.search(str(exc)))
     )
+
+
+def is_unavailable(exc: Exception) -> bool:
+    """401/403/404: bad or inactive key, no access, or unknown model."""
+    return isinstance(exc, openai.APIStatusError) and exc.status_code in (401, 403, 404)
 
 
 def is_transient(exc: Exception) -> bool:
@@ -169,8 +210,19 @@ def rejected_generation(exc: Exception) -> str | None:
     return generation if isinstance(generation, str) else ""
 
 
+def parse_wait(text: str) -> float | None:
+    """Seconds from hints like "retry in 31.6s" or "try again in 24m47.8s" / "1h2m3s"."""
+    match = _WAIT_RE.search(text)
+    if not match or not match.group(1).strip():
+        return None
+    total = 0.0
+    for value, unit in re.findall(r"([\d.]+)\s*([hms])", match.group(1)):
+        total += float(value) * {"h": 3600, "m": 60, "s": 1}[unit]
+    return total
+
+
 def _retry_after(exc: Exception) -> float | None:
-    """Retry delay from the Retry-After header, or a "retry in Ns" hint in the error message."""
+    """Retry delay from the Retry-After header, or a wait hint in the error message."""
     if not isinstance(exc, openai.APIStatusError):
         return None
     value = exc.response.headers.get("retry-after")
@@ -179,23 +231,33 @@ def _retry_after(exc: Exception) -> float | None:
             return float(value)
     except ValueError:
         pass
-    match = _RETRY_IN_RE.search(str(exc))
-    return float(match.group(1)) if match else None
+    return parse_wait(str(exc))
 
 
 class OpenAIBackend:
-    """ChatBackend over the ``openai`` SDK, pointed at ``LLM_BASE_URL``."""
+    """ChatBackend over the ``openai`` SDK for one OpenAI-compatible endpoint."""
 
-    def __init__(self, settings: Settings) -> None:
-        if not settings.llm_api_key:
+    def __init__(
+        self,
+        api_key: str,
+        base_url: str = "",
+        timeout: float = 60.0,
+        provider: str = "",
+        params: dict[str, str] | None = None,
+    ) -> None:
+        if not api_key:
             raise LLMError("LLM_API_KEY is not set (see .env.example)")
+        self.provider = provider
+        self.params = params or {}
         # SDK retries are disabled: LLM.complete owns backoff so behaviour is uniform and testable.
         self._client = openai.OpenAI(
-            api_key=settings.llm_api_key,
-            base_url=settings.llm_base_url or None,
-            timeout=settings.llm_timeout_s,
-            max_retries=0,
+            api_key=api_key, base_url=base_url or None, timeout=timeout, max_retries=0
         )
+
+    @classmethod
+    def from_settings(cls, settings: Settings) -> OpenAIBackend:
+        """Single-provider backend from the LLM_* settings."""
+        return cls(settings.llm_api_key, settings.llm_base_url, settings.llm_timeout_s)
 
     def chat(
         self,
@@ -204,33 +266,46 @@ class OpenAIBackend:
         messages: Sequence[Message],
         json_mode: bool,
         temperature: float,
+        tier: str = "smart",
     ) -> ChatResult:
         """Call ``chat.completions.create`` and map SDK errors onto Scout's LLM errors."""
-        extra = {"response_format": {"type": "json_object"}} if json_mode else {}
+        extra: dict[str, object] = dict(self.params)
+        if json_mode:
+            extra["response_format"] = {"type": "json_object"}
         try:
             response = self._client.chat.completions.create(
                 model=model,
                 messages=list(messages),  # type: ignore[arg-type]
                 temperature=temperature,
-                **extra,
+                **extra,  # type: ignore[arg-type]
             )
         except openai.OpenAIError as exc:
             rejected = rejected_generation(exc)
             if rejected is not None:
                 logger.info("Provider rejected a native tool call; using its text as the reply")
                 prompt = sum(estimate_tokens(m.get("content", "")) for m in messages)
-                return ChatResult(rejected, prompt, estimate_tokens(rejected), estimated=True)
+                return ChatResult(
+                    rejected, prompt, estimate_tokens(rejected), True, self.provider, model
+                )
             if is_transient(exc):
                 raise TransientLLMError(type(exc).__name__, _retry_after(exc)) from exc
             if is_daily_quota(exc):
-                raise LLMError(f"Daily quota exhausted for model {model}") from exc
+                reset = _retry_after(exc)
+                limit = _LIMIT_KIND_RE.search(str(exc))
+                kind = limit.group(1) if limit else "per-day limit"
+                raise QuotaExhaustedError(f"quota exhausted: {kind}", reset) from exc
+            if is_unavailable(exc):
+                code = getattr(exc, "status_code", "?")
+                raise CandidateUnavailableError(f"HTTP {code} for {model}") from exc
             raise LLMError(f"{type(exc).__name__}: {str(exc)[:300]}") from exc
         text = (response.choices[0].message.content or "") if response.choices else ""
         usage = response.usage
         if usage is None:
             prompt = sum(estimate_tokens(m.get("content", "")) for m in messages)
-            return ChatResult(text, prompt, estimate_tokens(text), estimated=True)
-        return ChatResult(text, usage.prompt_tokens, usage.completion_tokens)
+            return ChatResult(text, prompt, estimate_tokens(text), True, self.provider, model)
+        return ChatResult(
+            text, usage.prompt_tokens, usage.completion_tokens, False, self.provider, model
+        )
 
 
 def extract_json_text(text: str) -> str:
@@ -267,32 +342,54 @@ def _with_schema_instruction(messages: Sequence[Message], schema: type[BaseModel
 
 
 class LLM:
-    """Scout's LLM client: plain completions, validated JSON, backoff and token accounting."""
+    """Scout's LLM client: plain completions, validated JSON, backoff and token accounting.
+
+    ``deadline`` (a ``clock()`` value) bounds backoff waits: a wait that would overshoot it raises
+    :class:`DeadlineExceededError` instead of sleeping (Phase 2, A4). ``notices`` collects one
+    entry per call and per provider switch; the orchestrator turns them into trace events.
+    """
 
     def __init__(
         self,
         settings: Settings | None = None,
         backend: ChatBackend | None = None,
         sleep: Callable[[float], None] = time.sleep,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.settings = settings or load_settings()
         self._backend = backend
         self._sleep = sleep
+        self._clock = clock
+        self.deadline: float | None = None
         self.usage = UsageTracker()
+        self.notices: list[tuple[str, dict[str, object]]] = []
 
     @property
     def backend(self) -> ChatBackend:
         """The transport, created lazily so constructing an LLM never needs a key."""
         if self._backend is None:
-            self._backend = OpenAIBackend(self.settings)
+            self._backend = make_backend(self.settings, self._clock)
         return self._backend
 
+    @property
+    def routed(self) -> bool:
+        """True when a RouterBackend picks the model per tier."""
+        return bool(getattr(self.backend, "is_router", False))
+
     def _model(self, model: str | None, fast: bool) -> str:
-        """Resolve which model name to use for a call."""
+        """Resolve which model name to use for a call (the router picks its own)."""
         chosen = model or (self.settings.fast_model if fast else self.settings.scout_model)
-        if not chosen:
+        if not chosen and not self.routed:
             raise LLMError("SCOUT_MODEL is not set (see .env.example)")
         return chosen
+
+    def drain_notices(self) -> list[tuple[str, dict[str, object]]]:
+        """Return and clear pending (event_type, payload) notices, including router switches."""
+        pop = getattr(self.backend, "pop_switches", None)
+        switches = pop() if callable(pop) else []
+        items = [("provider_switched", sw) for sw in switches] + self.notices
+        self.notices = []
+        return items
 
     def complete(
         self,
@@ -305,32 +402,57 @@ class LLM:
     ) -> str:
         """Return the reply text, retrying 429/5xx/connection errors with exponential backoff."""
         name = self._model(model, fast)
+        tier = "fast" if fast else "smart"
         temp = self.settings.llm_temperature if temperature is None else temperature
         attempts = 1 + max(0, self.settings.llm_max_retries)
         for attempt in range(attempts):
-            started = time.monotonic()
+            started = self._clock()
             try:
                 result = self.backend.chat(
-                    model=name, messages=messages, json_mode=json_mode, temperature=temp
+                    model=name, messages=messages, json_mode=json_mode, temperature=temp, tier=tier
                 )
             except TransientLLMError as exc:
                 if attempt == attempts - 1:
                     raise LLMError(f"LLM call failed after {attempts} attempts: {exc}") from exc
                 delay = self._backoff(attempt, exc.retry_after)
+                self._check_deadline(delay)
                 logger.warning("Transient LLM error (%s); retrying in %.1fs", exc, delay)
                 self._sleep(delay)
                 continue
-            self.usage.calls.append(
-                CallRecord(
-                    model=name,
-                    prompt_tokens=result.prompt_tokens,
-                    completion_tokens=result.completion_tokens,
-                    latency_s=time.monotonic() - started,
-                    estimated=result.estimated,
-                )
-            )
+            self._record(result, name, tier, self._clock() - started)
             return result.text
         raise AssertionError("unreachable")  # pragma: no cover
+
+    def _record(self, result: ChatResult, name: str, tier: str, latency: float) -> None:
+        """Account tokens and queue an ``llm_call`` notice for the trace."""
+        record = CallRecord(
+            model=result.model or name,
+            prompt_tokens=result.prompt_tokens,
+            completion_tokens=result.completion_tokens,
+            latency_s=round(latency, 2),
+            estimated=result.estimated,
+            provider=result.provider,
+            tier=tier,
+        )
+        self.usage.calls.append(record)
+        self.notices.append(
+            (
+                "llm_call",
+                {
+                    "provider": record.provider,
+                    "model": record.model,
+                    "tier": tier,
+                    "prompt_tokens": record.prompt_tokens,
+                    "completion_tokens": record.completion_tokens,
+                    "latency_s": record.latency_s,
+                },
+            )
+        )
+
+    def _check_deadline(self, delay: float) -> None:
+        """Refuse a backoff wait that would overshoot the wall-clock deadline."""
+        if self.deadline is not None and self._clock() + delay > self.deadline:
+            raise DeadlineExceededError(f"backoff of {delay:.0f}s would overshoot the wall clock")
 
     def _backoff(self, attempt: int, retry_after: float | None) -> float:
         """Exponential delay for ``attempt`` (0-based), honouring Retry-After, capped."""
@@ -346,9 +468,14 @@ class LLM:
         *,
         fast: bool = False,
         model: str | None = None,
+        include_schema: bool = True,
     ) -> ModelT:
-        """Return a validated ``schema`` instance; one repair request on failure, then raise."""
-        msgs = _with_schema_instruction(messages, schema)
+        """Return a validated ``schema`` instance; one repair request on failure, then raise.
+
+        ``include_schema=False`` skips embedding the JSON Schema when the prompt already spells
+        out the format (saves tokens); validation is unchanged.
+        """
+        msgs = _with_schema_instruction(messages, schema) if include_schema else list(messages)
         json_mode = self.settings.llm_json_mode
         raw = self.complete(msgs, fast=fast, model=model, json_mode=json_mode)
         try:
@@ -370,6 +497,16 @@ class LLM:
             raise LLMValidationError(
                 f"{schema.__name__} still invalid after repair:\n{detail}", raw
             ) from exc
+
+
+def make_backend(settings: Settings, clock: Callable[[], float] = time.monotonic) -> ChatBackend:
+    """RouterBackend when provider keys are configured, else the single LLM_* provider."""
+    from scout.config import router_enabled
+    from scout.router import RouterBackend
+
+    if router_enabled(settings):
+        return RouterBackend.from_settings(settings, clock)
+    return OpenAIBackend.from_settings(settings)
 
 
 _default_llm: LLM | None = None

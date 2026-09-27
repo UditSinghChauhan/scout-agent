@@ -31,16 +31,18 @@ SEARCH_URL = "https://example.com/zoho-careers/1"
 PAGE_URL = "https://zoho.example/careers"
 
 
-def fake_fetch(url: str, focus: str) -> str:
+def fake_fetch(url: str) -> str:
     return f"Zoho hires 800 freshers a year through campus drives. Page {url}."
 
 
 def registry(settings: Settings) -> ToolRegistry:
-    return build_registry(settings, [FakeSearch().provider("fake")], fake_fetch)
+    return build_registry(settings, [FakeSearch().provider("fake")], fake_fetch, cache=None)
 
 
 def settings_for(tmp_path: Path, **overrides: object) -> Settings:
-    base = Settings(scout_model="fake-model", runs_dir=tmp_path, data_dir=tmp_path)
+    base = Settings(
+        scout_model="fake-model", runs_dir=tmp_path, data_dir=tmp_path, cache_enabled=False
+    )
     return base.with_overrides(**overrides)
 
 
@@ -76,6 +78,9 @@ def finish_action(*urls: str) -> dict:
     }
 
 
+COMPLETE = {"verdict": "complete", "reason": "answered"}
+
+
 def brief_reply(ids: list[str]) -> dict:
     return {
         "title": "Zoho as a prospect",
@@ -107,8 +112,10 @@ def test_orchestrator_happy_path(tmp_path: Path) -> None:
             search_action(),
             fetch_action(),
             finish_action(SEARCH_URL, PAGE_URL),
+            COMPLETE,
             search_action("zoho news"),
             finish_action("https://example.com/zoho-news/2"),
+            COMPLETE,
             brief_reply(["E1", "E2", "E3"]),
         ]
     )
@@ -124,7 +131,7 @@ def test_orchestrator_happy_path(tmp_path: Path) -> None:
     final = events[-1].payload
     assert final["status"] == "ok"
     assert final["metrics"]["tool_calls"] == 3
-    assert final["metrics"]["llm_calls"] == 8
+    assert final["metrics"]["llm_calls"] == 10
     assert final["metrics"]["citation_coverage"] == 100.0
     assert final["metrics"]["budget_exhausted"] is False
     report = final["report_md"]
@@ -148,6 +155,7 @@ def test_budget_exhaustion_ends_with_partial_brief(tmp_path: Path) -> None:
             search_action(),
             search_action("more"),  # tool budget now exhausted -> forced finish
             finish_action(SEARCH_URL),
+            COMPLETE,
             brief_reply(["E1"]),
         ]
     )
@@ -250,15 +258,16 @@ def test_executor_forces_finish_after_max_iterations(tmp_path: Path) -> None:
     assert result.evidence and events[-1].payload["iteration"] == "final"
 
 
-def test_scratchpad_keeps_last_three_in_full() -> None:
+def test_scratchpad_keeps_last_two_in_full() -> None:
     entries = [
         _Entry(Observation(tool="fetch_page", args={"url": f"u{i}"}, content=f"FULLTEXT{i}"), ())
         for i in range(5)
     ]
     pad = render_scratchpad(entries)
     assert "FULLTEXT0" in pad and "(summary)" in pad  # summaries keep a short excerpt
-    assert pad.count("(summary)") == 2
-    assert all(f"FULLTEXT{i}" in pad for i in (2, 3, 4))
+    assert pad.count("(summary)") == 3
+    assert "fetch_page({\"url\": \"u3\"})\nFULLTEXT3" in pad
+    assert "fetch_page({\"url\": \"u4\"})\nFULLTEXT4" in pad
 
 
 def test_untrusted_wrapper_neutralises_closing_tag() -> None:
@@ -267,9 +276,9 @@ def test_untrusted_wrapper_neutralises_closing_tag() -> None:
 
 
 def test_fetch_tool_output_is_wrapped(tmp_path: Path) -> None:
-    obs, urls = registry(settings_for(tmp_path)).run("fetch_page", {"url": PAGE_URL})
-    assert obs.ok and obs.content.startswith("<untrusted_content")
-    assert urls == (PAGE_URL,)
+    run = registry(settings_for(tmp_path)).run("fetch_page", {"url": PAGE_URL})
+    assert run.observation.ok and run.observation.content.startswith("<untrusted_content")
+    assert run.urls == (PAGE_URL,)
 
 
 # --- synthesizer ---------------------------------------------------------------------------------

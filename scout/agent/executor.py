@@ -22,14 +22,14 @@ from scout.events import Event, EventType
 from scout.llm import LLM, LLMValidationError
 from scout.playbooks import Playbook
 from scout.prompts import load_prompt
+from scout.safety import is_personal_profile
 from scout.schemas import Action, Evidence, Finding, Observation, Step, StepResult, Task
-from scout.tools.registry import ToolRegistry
+from scout.tools.registry import REPEAT_NOTE, ToolRegistry
 
 logger = logging.getLogger(__name__)
 
 EmitFn = Callable[[EventType, dict[str, Any]], Event]
 
-FULL_OBSERVATIONS = 3  # docs/SPEC.md §4: last 3 observations in full, older ones as one line.
 _TAG_RE = re.compile(r"</?untrusted_content[^>]*>")
 
 
@@ -91,12 +91,12 @@ def summarize_observation(entry: _Entry) -> str:
     return f"{obs.tool}({args}) -> {text[:160]}"
 
 
-def render_scratchpad(entries: list[_Entry]) -> str:
-    """Older observations as one-liners, the last three in full."""
+def render_scratchpad(entries: list[_Entry], full: int = 2) -> str:
+    """Older observations as one-liners, the last ``full`` in full."""
     if not entries:
         return "No observations yet. Start with a tool call."
     lines: list[str] = []
-    cutoff = len(entries) - FULL_OBSERVATIONS
+    cutoff = len(entries) - full
     for i, entry in enumerate(entries, 1):
         if i <= cutoff:
             lines.append(f"[{i}] (summary) {summarize_observation(entry)}")
@@ -107,16 +107,15 @@ def render_scratchpad(entries: list[_Entry]) -> str:
     return "\n\n".join(lines)
 
 
-def _messages(system: str, entries: list[_Entry], iteration: int, force_finish: bool) -> list:
+def _messages(
+    system: str, entries: list[_Entry], iteration: int, force_finish: bool, full: int
+) -> list:
     """Build the per-iteration prompt from the compact scratchpad."""
-    user = f"## Observations\n{render_scratchpad(entries)}\n\n"
+    user = f"## Observations\n{render_scratchpad(entries, full)}\n\n"
     if force_finish:
-        user += (
-            "No more tool calls are available. Respond now with a `finish` action, using only "
-            "findings supported by the observations above."
-        )
+        user += "No research turns left. Reply with a finish action now."
     else:
-        user += f"Tool turn {iteration}. Respond with your next action."
+        user += f"Turn {iteration}. Reply with your next action."
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
 
@@ -124,6 +123,8 @@ def _result_summary(obs: Observation, urls: tuple[str, ...]) -> str:
     """Short human-readable summary of a tool result for the trace."""
     if not obs.ok:
         return obs.error or "error"
+    if obs.content.startswith(REPEAT_NOTE):
+        return "repeat of an earlier call (not re-run)"
     if obs.tool == "web_search":
         return f"{len(urls)} results"
     text = " ".join(_TAG_RE.sub("", obs.content).split())
@@ -141,19 +142,25 @@ def execute_step(
     settings: Settings,
     ledger: EvidenceLedger,
     emit: EmitFn,
+    approach: str | None = None,
 ) -> Generator[Event, None, StepResult]:
-    """Run the ReAct loop for one step, yielding trace events; return the StepResult."""
+    """Run the ReAct loop for one step, yielding trace events; return the StepResult.
+
+    ``approach`` is the critic's ``new_approach`` when the step is being retried.
+    """
     purpose = f"{playbook.purpose_type}: {playbook.description}"
     if task.user_context:
         purpose += f" User context: {task.user_context}"
+    retry_note = f"\nRetry: an earlier attempt failed. New approach: {approach}" if approach else ""
     system = load_prompt(
         "executor",
-        question=step.question,
+        question=step.question + retry_note,
         done_criteria=step.done_criteria or "a sourced answer to the question",
         purpose=purpose,
         tools=registry.describe(with_thought=True),
         max_iterations=settings.max_react_iterations,
     )
+    full = settings.scratchpad_full_observations
     entries: list[_Entry] = []
     seen_urls: set[str] = set()
     finish: Action | None = None
@@ -165,7 +172,10 @@ def execute_step(
         iterations = iteration
         try:
             action = llm.complete_json(
-                _messages(system, entries, iteration, False), Action, fast=True
+                _messages(system, entries, iteration, False, full),
+                Action,
+                fast=True,
+                include_schema=False,
             )
         except LLMValidationError as exc:
             obs = Observation(tool="(invalid action)", ok=False, error=str(exc)[:300])
@@ -178,18 +188,20 @@ def execute_step(
             break
         if not budget.tool_available():
             break
-        budget.charge_tool()
         yield emit("tool_call", {"step_id": step.id, "tool": action.tool, "args": action.args})
-        obs, urls = registry.run(action.tool or "", action.args)
-        seen_urls.update(normalize_url(u) for u in urls)
-        entries.append(_Entry(obs, urls))
+        run = registry.run(action.tool or "", action.args)
+        if not run.repeated:
+            budget.charge_tool()
+        seen_urls.update(normalize_url(u) for u in run.urls)
+        entries.append(_Entry(run.observation, run.urls))
         yield emit(
             "tool_result",
             {
                 "step_id": step.id,
-                "tool": obs.tool,
-                "ok": obs.ok,
-                "summary": _result_summary(obs, urls),
+                "tool": run.observation.tool,
+                "ok": run.observation.ok,
+                "repeated": run.repeated,
+                "summary": _result_summary(run.observation, run.urls),
             },
         )
 
@@ -197,7 +209,9 @@ def execute_step(
     llm_room = budget.llm.usage.llm_calls < settings.max_llm_calls - SYNTHESIS_RESERVE
     if finish is None and entries and llm_room:
         try:
-            forced = llm.complete_json(_messages(system, entries, 0, True), Action, fast=True)
+            forced = llm.complete_json(
+                _messages(system, entries, 0, True, full), Action, fast=True, include_schema=False
+            )
             yield emit(
                 "thought", {"step_id": step.id, "iteration": "final", "text": forced.thought}
             )
@@ -208,7 +222,9 @@ def execute_step(
     evidence: list[Evidence] = []
     dropped = 0
     for finding in finish.findings if finish else []:
-        if normalize_url(finding.source_url) not in seen_urls:
+        if normalize_url(finding.source_url) not in seen_urls or is_personal_profile(
+            finding.source_url, settings.personal_profile_patterns
+        ):
             dropped += 1
             continue
         item = ledger.add(finding, step.id)
@@ -228,5 +244,6 @@ def execute_step(
         iterations=iterations,
         sources_used=sorted(
             {u for e in entries for u in e.urls if e.observation.tool == "fetch_page"}
+            | {e.source_url for e in evidence}
         ),
     )

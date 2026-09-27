@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -29,6 +29,7 @@ class FakeRequest:
     messages: list[Message]
     json_mode: bool
     temperature: float
+    tier: str = "smart"
 
 
 class FakeLLM:
@@ -51,9 +52,10 @@ class FakeLLM:
         messages: Sequence[Message],
         json_mode: bool,
         temperature: float,
+        tier: str = "smart",
     ) -> ChatResult:
         """Record the request and return (or raise) the next scripted item."""
-        request = FakeRequest(model, [dict(m) for m in messages], json_mode, temperature)
+        request = FakeRequest(model, [dict(m) for m in messages], json_mode, temperature, tier)
         self.requests.append(request)
         if not self.script:
             raise AssertionError("FakeLLM script exhausted")
@@ -64,10 +66,14 @@ class FakeLLM:
         prompt = sum(estimate_tokens(m.get("content", "")) for m in messages)
         return ChatResult(text=text, prompt_tokens=prompt, completion_tokens=estimate_tokens(text))
 
-    def llm(self, settings: Settings | None = None) -> LLM:
+    def llm(
+        self, settings: Settings | None = None, clock: Callable[[], float] | None = None
+    ) -> LLM:
         """Build a real ``LLM`` wired to this fake, with instant (recorded) backoff sleeps."""
         base = settings or Settings(scout_model="fake-model", scout_fast_model="fake-fast")
-        return LLM(settings=base, backend=self, sleep=self.sleeps.append)
+        if clock is None:
+            return LLM(settings=base, backend=self, sleep=self.sleeps.append)
+        return LLM(settings=base, backend=self, sleep=self.sleeps.append, clock=clock)
 
     @property
     def calls(self) -> int:

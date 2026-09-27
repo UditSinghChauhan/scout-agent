@@ -53,6 +53,23 @@ def render_event(event: Event) -> None:
     elif event.type == "tool_result":
         style = "green" if p.get("ok") else "red"
         console.print(f"  [{style}]result[/] {p.get('summary', '')}")
+    elif event.type == "critique":
+        verdict = f"step {p.get('step_id')}: {p.get('verdict')} — {p.get('reason')}"
+        console.print(f"  [bold cyan]critic[/] {verdict}")
+    elif event.type == "retry":
+        console.print(f"  [bold yellow]retry[/] step {p.get('step_id')}: {p.get('new_approach')}")
+    elif event.type == "replan":
+        console.print(f"  [bold yellow]replan[/] + {p.get('added_step', {}).get('question')}")
+    elif event.type == "provider_switched":
+        console.print(
+            f"  [bold magenta]switch[/] {p.get('tier')}: {p.get('from')} -> {p.get('to')} "
+            f"({p.get('reason')})"
+        )
+    elif event.type == "verification":
+        console.print(
+            f"  verifier: flagged={p.get('flagged')} numeric={len(p.get('flagged_numeric', []))} "
+            f"revised={p.get('revised')} moved_to_unknowns={len(p.get('moved_to_unknowns', []))}"
+        )
     elif event.type == "synthesis":
         console.print(f"  claims: {p.get('claims')}, cited: {p.get('cited_claims')}")
     elif event.type == "error":
@@ -72,6 +89,12 @@ def _render_finish(event: Event) -> None:
         f"llm_calls={m.get('llm_calls')} tokens={m.get('total_tokens')} "
         f"seconds={m.get('latency_s')} citation_coverage={m.get('citation_coverage')}% "
         f"budget={m.get('budget_reason') or 'ok'}"
+    )
+    console.print(
+        f"models={m.get('tokens_by_model')} switches={m.get('provider_switches')} "
+        f"verdicts={m.get('critique_verdicts')} retries={m.get('retries')} "
+        f"replans={m.get('replans')} flagged_numeric={m.get('flagged_numeric_claims')} "
+        f"unsupported={m.get('unsupported_claims')}"
     )
 
 

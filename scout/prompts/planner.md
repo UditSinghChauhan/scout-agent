@@ -35,3 +35,6 @@ $tools
   contact details.
 - Number steps from 1. Set `answered_from_memory` to false unless the memory section above
   already answers the step.
+
+Reply with one JSON object:
+{"steps": [{"id": 1, "question": "...", "rationale": "...", "suggested_tools": ["web_search", "fetch_page"], "done_criteria": "...", "answered_from_memory": false}], "notes": ""}

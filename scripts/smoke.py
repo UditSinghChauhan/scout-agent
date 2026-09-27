@@ -66,7 +66,8 @@ def check_llm(settings: Settings) -> bool:
     ]
     started = time.monotonic()
     snapshot = llm.complete_json(messages, CompanySnapshot)
-    print(f"Model: {settings.scout_model}")
+    last = llm.usage.calls[-1]
+    print(f"Served by: {last.provider or 'single provider'} / {last.model}")
     print("Validated JSON:", snapshot.model_dump_json(indent=2))
     print(f"LLM calls: {llm.usage.llm_calls} | tokens: {llm.usage.prompt_tokens} prompt + "
           f"{llm.usage.completion_tokens} completion | {time.monotonic() - started:.1f}s")

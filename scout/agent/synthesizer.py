@@ -18,7 +18,7 @@ def _ledger_text(ledger: EvidenceLedger) -> str:
     if not ledger.items:
         return "(no evidence was gathered)"
     return "\n".join(
-        f"[{e.id}] {e.claim} ({e.source_url}) — {e.snippet[:220]}" for e in ledger.items
+        f"[{e.id}] {e.claim} ({e.source_url}) — {e.snippet[:200]}" for e in ledger.items
     )
 
 
@@ -28,6 +28,7 @@ def synthesize(
     playbook: Playbook,
     ledger: EvidenceLedger,
     budget_note: str | None = None,
+    critic_unknowns: list[str] | None = None,
 ) -> Brief:
     """Ask the LLM to write the Brief from the ledger only."""
     note = ""
@@ -42,11 +43,13 @@ def synthesize(
         sections="\n".join(f"{i}. {s}" for i, s in enumerate(playbook.sections, 1)),
         score_rule=playbook.score_rubric or "No score for this purpose (score: null).",
         evidence=_ledger_text(ledger),
+        critic_unknowns="\n".join(f"- {q}" for q in critic_unknowns or []) or "- none",
         budget_note=note,
     )
     brief = llm.complete_json(
         [{"role": "system", "content": prompt}, {"role": "user", "content": "Write the brief."}],
         Brief,
+        include_schema=False,
     )
     return brief.model_copy(update={"purpose_type": task.purpose_type, "budget_note": budget_note})
 
