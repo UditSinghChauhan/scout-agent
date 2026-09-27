@@ -28,13 +28,15 @@ from scout.agent.reflector import reflect
 from scout.agent.synthesizer import citation_stats, fallback_brief, render_markdown, synthesize
 from scout.agent.verifier import (
     apply_revisions,
+    check_claim,
     find_issues,
     move_to_unknowns,
     revise_claims,
 )
+from scout.briefclean import clean_brief
 from scout.config import Settings, git_commit
 from scout.events import Event, EventType
-from scout.llm import LLM, DeadlineExceededError
+from scout.llm import LLM, DeadlineExceededError, LLMValidationError
 from scout.memory.store import MemoryStore, domain_of, normalize_entity, now_utc
 from scout.playbooks import Playbook, get_playbook
 from scout.safety import is_meta_unknown, scrub_brief, violates_contact_policy
@@ -55,6 +57,7 @@ from scout.tools.registry import ToolRegistry, build_registry
 
 logger = logging.getLogger(__name__)
 T = TypeVar("T")
+SYNTHESIS_RETRIES = 1  # one more full attempt when the brief JSON is malformed after repair
 UNKNOWN_OVERLAP = 0.5  # an Unknowns line sharing half its keywords with an earlier one is a repeat
 
 
@@ -434,14 +437,26 @@ class Orchestrator:
             "stage_started",
             {"evidence": len(state.ledger.items), "budget_note": note},
         )
-        try:
-            state.brief = synthesize(
-                self.llm, state.task, state.playbook, state.ledger, note, state.critic_unknowns
-            )
-        except Exception as exc:  # noqa: BLE001
-            yield from self._notices("synthesize")
-            yield self._event("synthesize", "error", {"message": f"Synthesis failed: {exc}"})
-            state.brief = fallback_brief(state.task, state.playbook, state.ledger, note)
+        for attempt in range(1 + SYNTHESIS_RETRIES):
+            try:
+                state.brief = synthesize(
+                    self.llm, state.task, state.playbook, state.ledger, note, state.critic_unknowns
+                )
+                break
+            except Exception as exc:  # noqa: BLE001
+                yield from self._notices("synthesize")
+                payload: dict[str, Any] = {
+                    "message": f"Synthesis failed: {exc}",
+                    "attempt": attempt + 1,
+                }
+                raw = getattr(exc, "raw", None)
+                if isinstance(raw, str):
+                    payload["raw_excerpt"] = raw[:600]
+                yield self._event("synthesize", "error", payload)
+                retryable = isinstance(exc, LLMValidationError)
+                if not retryable or attempt == SYNTHESIS_RETRIES:
+                    state.brief = fallback_brief(state.task, state.playbook, state.ledger, note)
+                    break
         yield from self._notices("synthesize")
         cited, total = citation_stats(state.brief, state.ledger)
         yield self._event("synthesize", "synthesis", {"claims": total, "cited_claims": cited})
@@ -470,7 +485,9 @@ class Orchestrator:
         unknowns = dedupe(unknowns + missing, UNKNOWN_OVERLAP)
         state.brief = state.brief.model_copy(update={"unknowns": unknowns})
         state.unsupported = len(issues)
-        state.brief = scrub_brief(state.brief)
+        takeaways = [c for c in state.brief.summary if check_claim(c, state.ledger) is None]
+        state.brief = state.brief.model_copy(update={"summary": takeaways})
+        state.brief = scrub_brief(clean_brief(state.brief))
         state.report_md = render_markdown(state.brief, state.ledger, self.run_id)
         yield self._event(
             "verify",
@@ -506,8 +523,18 @@ class Orchestrator:
             yield self._event("reflect", "error", {"message": f"Reflection failed: {exc}"})
             return
         yield from self._notices("reflect")
+        texts = {lesson.id: lesson.text for lesson in state.memory.lessons}
         for vote in reflection.votes:
             self.store.vote(vote.lesson_id, vote.helpful)
+            yield self._event(
+                "reflect",
+                "lesson_voted",
+                {
+                    "lesson_id": vote.lesson_id,
+                    "text": texts.get(vote.lesson_id, ""),
+                    "helpful": vote.helpful,
+                },
+            )
         for text in reflection.lessons:
             lesson, merged = self.store.add_or_merge_lesson(
                 state.task.purpose_type, text, self.settings.lesson_merge_overlap

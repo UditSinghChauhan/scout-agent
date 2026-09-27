@@ -34,6 +34,7 @@ EventType = Literal[
     "provider_switched",
     "llm_call",
     "rate_limited",
+    "lesson_voted",
 ]
 
 

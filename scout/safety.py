@@ -61,9 +61,11 @@ def scrub_brief(brief: Brief) -> Brief:
         )
         for s in brief.sections
     ]
+    summary = [c.model_copy(update={"text": scrub_text(c.text)}) for c in brief.summary]
     return brief.model_copy(
         update={
             "title": scrub_text(brief.title),
+            "summary": summary,
             "sections": sections,
             "unknowns": [scrub_text(u) for u in brief.unknowns],
             "score_reasons": [scrub_text(r) for r in brief.score_reasons],

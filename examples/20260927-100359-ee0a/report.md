@@ -1,8 +1,8 @@
-# Freshworks - sales_prospect
+# Freshworks - Sales prospect
 
-_Purpose: sales_prospect · Run `20260927-100359-ee0a`_
+_Purpose: Sales prospect · Run `20260927-100359-ee0a`_
 
-**Score:** 80
+**Score:** Fit 80/100
 
 - Freshworks has a global scale of over 5,000 employees and active campus recruitment programs.
 - The company conducts structured technical fresher hiring, fitting the user's campus hiring-challenge platform.
@@ -16,8 +16,7 @@ _Purpose: sales_prospect · Run `20260927-100359-ee0a`_
 
 ## Buying signals
 
-- Freshworks actively recruits fresher and campus batches, specifically targeting 2025 graduation batches for Graduate Trainee Engineer positions. [2]
-- The company utilizes an established multi-section online assessment process for campus and fresher recruitment, indicating an existing reliance on digital evaluation tools. [3]
+_Nothing verified for this section._
 
 ## Pain points
 
@@ -34,11 +33,11 @@ _Purpose: sales_prospect · Run `20260927-100359-ee0a`_
 
 ## Risks
 
-- A recent restructuring plan in November 2024 to increase operational efficiency may cause budget constraints or hesitation regarding new software vendor adoption. [4]
+_Nothing verified for this section._
 
 ## Unknowns
 
-- None recorded.
+- None
 
 ## Sources
 

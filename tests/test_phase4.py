@@ -97,7 +97,7 @@ def test_reducer_tolerates_old_trace() -> None:
     view = build_view(load_trace(FIXTURES / "old_trace.jsonl"))
     assert view.finished and view.goal == "Research Zoho"
     assert view.lessons_injected == [{"id": None, "text": "an old plain-string lesson"}]
-    assert [s.status for s in view.steps] == ["done", "pending"]
+    assert [s.status for s in view.steps] == ["done", "not reached"]
     assert view.errors == ["error"]
     assert view.brief is None and view.report_md.startswith("# Zoho")
 
@@ -225,11 +225,12 @@ def test_feedback_click_persists_and_changes_insights(
 ) -> None:
     at = _app(tmp_path, monkeypatch)
     at.run()
-    at.button(key=f"fb-{DEMO_ID}-0-True").click().run()  # 👍 on "Company in 60 seconds"
+    at.feedback(key=f"fb-{DEMO_ID}-0").set_value(1).run()  # 👍 beside "Company in 60 seconds"
     assert not at.exception
     store = MemoryStore(tmp_path / "data" / "scout.db")
     assert store.source_scores()["en.wikipedia.org"] == pytest.approx(2 / 3)
     assert store.feedback()[0]["section"] == "Company in 60 seconds"
+    at.radio(key="insights-source").set_value("Memory database").run()
     tables = [t.value for t in at.table]
     assert any("en.wikipedia.org" in t.to_string() for t in tables)  # Insights top sources
 

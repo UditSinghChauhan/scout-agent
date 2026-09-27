@@ -142,7 +142,7 @@ Across these runs the verifier flagged 13 claims (missing citations or numbers n
 - **SSRF guard:** `fetch_page` allows only http/https, blocks localhost, private, link-local and other non-public addresses, re-checks every redirect, caps size and time.
 - **Personal data:** roles only. Personal profile pages are never fetched or cited, lessons recommending them are discarded, and emails and phone numbers are scrubbed from the brief.
 - **Provider router:** ordered candidates per tier with cooldowns on quota errors and long rate limits, failover on 401/403/404, every switch traced; rate-limit waits are shown live.
-- **Tests:** 238 offline tests (`pytest -q`), no network: fakes for the LLM and search, including a Streamlit AppTest of the UI.
+- **Tests:** 258 offline tests (`pytest -q`), no network: fakes for the LLM and search, including a Streamlit AppTest of the UI.
 
 ## Design decisions and trade-offs
 

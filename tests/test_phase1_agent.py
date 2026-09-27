@@ -81,13 +81,20 @@ def finish_action(*urls: str) -> dict:
 COMPLETE = {"verdict": "complete", "reason": "answered"}
 
 
+TOPICS = {
+    "E1": "Zoho hires freshers through campus drives.",
+    "E2": "Zoho runs its own careers portal.",
+    "E3": "Zoho announced new regional offices.",
+}
+
+
 def brief_reply(ids: list[str]) -> dict:
     return {
         "title": "Zoho as a prospect",
         "sections": [
             {
                 "title": "Snapshot",
-                "claims": [{"text": f"claim {i}", "evidence_ids": [i]} for i in ids],
+                "claims": [{"text": TOPICS[i], "evidence_ids": [i]} for i in ids],
             }
         ],
         "score": "70/100",
@@ -136,7 +143,8 @@ def test_orchestrator_happy_path(tmp_path: Path) -> None:
     assert final["metrics"]["citation_coverage"] == 100.0
     assert final["metrics"]["budget_exhausted"] is False
     report = final["report_md"]
-    assert "claim E1 [1]" in report and "claim E3 [3]" in report
+    assert "Zoho hires freshers through campus drives. [1]" in report
+    assert "Zoho announced new regional offices. [3]" in report
     assert f"<{PAGE_URL}>" in report
     assert "## Unknowns" in report and "budget owner" in report
 

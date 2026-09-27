@@ -1,13 +1,13 @@
 # Zoho Corporation: Sales Prospect Brief for Campus Hiring-Challenge Platform
 
-_Purpose: sales_prospect · Run `20260927-095658-c06c`_
+_Purpose: Sales prospect · Run `20260927-095658-c06c`_
 
-**Score:** 75
+**Score:** Fit 75/100
 
-- High hiring volume with active fresher drives for 2024-2026 batches (E6, E7).
-- Significant geographic expansion into rural areas increases the need for scalable, remote-friendly assessment tools (E10, E11).
-- Existing use of internal assessment platforms suggests a need for technical evaluation, but also poses a 'build vs. buy' risk (E9, E14).
-- Large employee base (18,000+) and global presence indicate budget and scale suitable for enterprise software (E1, E3).
+- High hiring volume with active fresher drives for 2024-2026 batches.
+- Significant geographic expansion into rural areas increases the need for scalable, remote-friendly assessment tools.
+- Existing use of internal assessment platforms suggests a need for technical evaluation, but also poses a 'build vs. buy' risk.
+- Large employee base (18,000+) and global presence indicate budget and scale suitable for enterprise software.
 
 ## Snapshot
 

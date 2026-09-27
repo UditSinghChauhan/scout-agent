@@ -1,6 +1,6 @@
 # Zoho SDE intern interview prep
 
-_Purpose: interview_prep · Run `20260101-120000-demo`_
+_Purpose: Interview prep · Run `20260101-120000-demo`_
 
 **Score:** Readiness 2/3
 

@@ -59,9 +59,7 @@ def tavily_provider(settings: Settings) -> SearchProvider:
         from tavily import TavilyClient
 
         client = TavilyClient(api_key=settings.tavily_api_key)
-        response = client.search(
-            query, max_results=max_results, timeout=settings.search_timeout_s
-        )
+        response = client.search(query, max_results=max_results, timeout=settings.search_timeout_s)
         return normalize_results(
             response.get("results", []),
             url_key="url",

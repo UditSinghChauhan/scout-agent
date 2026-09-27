@@ -10,6 +10,7 @@ import logging
 import re
 import sys
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +20,7 @@ import pandas as pd  # noqa: E402
 import streamlit as st  # noqa: E402
 
 from scout.agent.orchestrator import Orchestrator  # noqa: E402
+from scout.agent.synthesizer import escape_md, presentable, render_parts  # noqa: E402
 from scout.config import (  # noqa: E402
     PROVIDERS,
     ROUTES,
@@ -31,6 +33,13 @@ from scout.config import (  # noqa: E402
 from scout.events import RunRecorder  # noqa: E402
 from scout.insights import apply_feedback  # noqa: E402
 from scout.memory.store import MemoryStore, reset_memory, score  # noqa: E402
+from scout.playbooks import purpose_label  # noqa: E402
+from scout.ui.recorded import (  # noqa: E402
+    RecordedRun,
+    recorded_lessons,
+    recorded_runs,
+    recorded_sources,
+)
 from scout.ui.runs import SavedRun, list_runs, load_events  # noqa: E402
 from scout.ui.viewmodel import (  # noqa: E402
     RunView,
@@ -59,13 +68,15 @@ STATUS_COLORS = {
     "from memory": "violet",
     "retried": "orange",
     "unknown": "yellow",
+    "skipped (budget)": "gray",
+    "not reached": "gray",
     "error": "red",
 }
 ENTRY_ICONS = {
     "thought": "💭",
     "tool": "🔧",
-    "result": "📄",
-    "critique": "🧐",
+    "result": "👁",
+    "critique": "⚖️",
     "retry": "🔁",
     "switch": "🔀",
     "error": "⚠️",
@@ -76,9 +87,9 @@ NO_KEYS_MESSAGE = "Live mode needs API keys; see README. Replay the example runs
 QUIET_EVENTS = {"llm_call"}  # not worth a re-render during streaming
 WORKFLOW_DOT = """
 digraph scout {
-  rankdir=LR; bgcolor="transparent";
-  node [shape=box, style="rounded,filled", fillcolor="#eef3fb", fontname="Helvetica", fontsize=16];
-  edge [fontname="Helvetica", fontsize=13, color="#667085", fontcolor="#667085"];
+  rankdir=LR; bgcolor="transparent"; nodesep=0.35; ranksep=0.45;
+  node [shape=box, style="rounded,filled", fillcolor="#eef3fb", fontname="Helvetica", fontsize=18];
+  edge [fontname="Helvetica", fontsize=14, color="#667085", fontcolor="#667085"];
   Intake -> Recall -> Plan -> Execute -> Critique;
   Critique -> Execute [label="next step / retry"];
   Critique -> Plan [label="follow-up (replan)"];
@@ -88,6 +99,13 @@ digraph scout {
   Verify -> Reflect;
   Memory [shape=cylinder, fillcolor="#f3eefb", label="Memory\\nfacts · sources · lessons"];
   Memory -> Recall [style=dashed]; Reflect -> Memory [style=dashed];
+  Tools [shape=component, fillcolor="#eefbf1", label="Tools\\nsearch · fetch · memory"];
+  Execute -> Tools [dir=both, style=dashed];
+  Router [shape=hexagon, fillcolor="#fbf6ee", label="Model router\\nGroq ×3 → Gemini"];
+  subgraph router_links {
+    edge [style=dotted, arrowhead=none, color="#b08a4a", fontcolor="#b08a4a"];
+    Router -> Plan [label="LLM calls"]; Router -> Execute; Router -> Synthesize;
+  }
 }
 """
 
@@ -105,16 +123,43 @@ def open_store(cfg: Settings) -> MemoryStore:
     return MemoryStore(cfg.db_path)
 
 
+def citation_linker(tail_md: str) -> Callable[[str], str]:
+    """A function that turns [n] citations into links, using the Sources list in ``tail_md``."""
+    sources = dict(re.findall(r"^(\d+)\. <(.+)>$", tail_md, re.M))
+
+    def link(text: str) -> str:
+        def one(match: re.Match[str]) -> str:
+            num = match.group(1)
+            return f"[[{num}]]({sources[num]})" if num in sources else match.group(0)
+
+        return re.sub(r"(?<!\[)\[(\d+)\](?!\()", one, text)
+
+    return link
+
+
 def linkify(report_md: str) -> str:
     """Turn numbered citations [n] into links to the matching source URL."""
     body, sep, tail = report_md.partition("\n## Sources")
-    sources = dict(re.findall(r"^(\d+)\. <(.+)>$", tail, re.M))
+    return citation_linker(tail)(body) + sep + tail
 
-    def link(match: re.Match[str]) -> str:
-        num = match.group(1)
-        return f"[[{num}]]({sources[num]})" if num in sources else match.group(0)
 
-    return re.sub(r"\[(\d+)\]", link, body) + sep + tail
+def demote(markdown: str) -> str:
+    """Demote report headings so the brief sits inside the page (H1 -> H3, H2 -> H4)."""
+    return re.sub(r"^(#{1,2}) ", lambda m: "#" * (len(m.group(1)) + 2) + " ", markdown, flags=re.M)
+
+
+def fmt_metric(label: str, value: Any) -> str:
+    """Readable metric values: 29,723 tokens, 56.4 s, 100%."""
+    if value is None:
+        return "–"
+    if label == "Seconds":
+        return f"{float(value):.1f} s"
+    if label == "Citation coverage":
+        pct = float(value)
+        return f"{pct:.0f}%" if pct == int(pct) else f"{pct:.1f}%"
+    if isinstance(value, int | float):
+        return f"{int(value):,}"
+    return str(value)
 
 
 def provider_lines(cfg: Settings) -> list[str]:
@@ -158,7 +203,7 @@ def render_recall(view: RunView) -> None:
     elif view.stages.get("recall") != "pending":
         st.caption(f"Cold start: no stored facts about {who} yet.")
     if view.lessons_injected:
-        lessons = "\n".join(f"- {lesson['text']}" for lesson in view.lessons_injected)
+        lessons = "\n".join(f"- {escape_md(lesson['text'])}" for lesson in view.lessons_injected)
         st.success(
             f"📚 Using {len(view.lessons_injected)} lessons learned from earlier runs\n\n{lessons}"
         )
@@ -174,18 +219,18 @@ def render_stages(view: RunView) -> None:
 
 def step_label(step: StepView) -> str:
     """Plan row text."""
-    tag = " · replanned" if step.replanned else ""
+    tag = " · added by replan" if step.replanned else ""
     facts = f" · facts {step.fact_ids}" if step.status == "from memory" and step.fact_ids else ""
-    return f"**{step.id}.** {step.question}{tag}{facts}"
+    return f"**{step.id}.** {escape_md(step.question)}{tag}{facts}"
 
 
 def render_plan(view: RunView) -> None:
     """Plan panel with a status chip per step; replanned steps highlighted."""
-    st.subheader("Plan")
+    st.subheader(f"Plan · {purpose_label(view.purpose)}" if view.purpose else "Plan")
     if not view.steps:
         st.caption("Waiting for the plan…")
     for step in view.steps:
-        chip, text = st.columns([1.6, 6])
+        chip, text = st.columns([1.8, 6])
         with chip:
             st.badge(step.status, color=STATUS_COLORS.get(step.status, "gray"))
         with text:
@@ -196,27 +241,34 @@ def render_plan(view: RunView) -> None:
 
 
 def render_entries(entries: list[TraceEntry]) -> None:
-    """Lines of a trace."""
+    """A step's compact timeline: 💭 thought → 🔧 tool call → 👁 result → ⚖️ critic."""
     for entry in entries:
         icon = ENTRY_ICONS.get(entry.kind, "•")
         text = entry.text if len(entry.text) <= 400 else entry.text[:400] + "…"
+        text = escape_md(text)
         if entry.kind == "error":
             st.error(f"{icon} {text}")
-        elif entry.kind == "wait":
+        elif entry.kind in ("wait", "switch"):
             st.caption(f"{icon} {text}")
+        elif entry.kind == "tool":
+            st.markdown(f"{icon} `{entry.text[:300]}`")
         else:
             st.markdown(f"{icon} {text}")
 
 
-def render_trace(view: RunView, expanded_step: int | None = None) -> None:
-    """One expander per step, plus run-level events."""
+def render_trace(view: RunView) -> None:
+    """One expander per step titled with its one-line summary, plus run-level events.
+
+    While a run streams (or a replay animates) the active step is open; afterwards, steps with a
+    retry, replan, memory hit or unknown verdict are open.
+    """
     st.subheader("Trace")
     for step in view.steps:
         if not step.entries:
             continue
-        with st.expander(
-            f"Step {step.id} · {step.status} · {step.question}", expanded=step.id == expanded_step
-        ):
+        expanded = step.notable if view.finished else step.id == view._current
+        with st.expander(step.summary, expanded=expanded):
+            st.caption(escape_md(step.question))
             render_entries(step.entries)
     if view.run_entries:
         with st.expander(f"Run events ({len(view.run_entries)})"):
@@ -224,72 +276,89 @@ def render_trace(view: RunView, expanded_step: int | None = None) -> None:
 
 
 def render_metrics(view: RunView) -> None:
-    """Headline metrics row."""
+    """Metrics row; the fixed-format score is the first and largest tile (omitted if none)."""
     m = view.metrics
     cells = [
         ("Tool calls", m.get("tool_calls")),
         ("LLM calls", m.get("llm_calls")),
         ("Tokens", m.get("total_tokens")),
         ("Seconds", m.get("latency_s")),
-        ("Citation coverage", f"{m.get('citation_coverage', 0)}%"),
+        ("Citation coverage", m.get("citation_coverage", 0)),
         ("Memory steps", m.get("memory_steps", 0)),
         ("Provider switches", m.get("provider_switches", len(view.switches))),
     ]
-    for col, (label, value) in zip(st.columns(len(cells)), cells, strict=True):
-        col.metric(label, "–" if value is None else value)
+    widths = ([2.2] if view.score else []) + [1] * len(cells)
+    cols = st.columns(widths)
+    if view.score:
+        cols[0].metric("Score", view.score, border=True)
+        cols = cols[1:]
+    for col, (label, value) in zip(cols, cells, strict=True):
+        col.metric(label, fmt_metric(label, value))
 
 
-def render_feedback(view: RunView, cfg: Settings) -> None:
-    """Thumbs up/down per brief section, stored via the feedback function."""
-    if not view.brief:
+def _feedback_changed(cfg: Settings, run_id: str, key: str, title: str, final: dict) -> None:
+    """st.feedback callback: store a thumbs up/down for one section."""
+    value = st.session_state.get(key)
+    if value is None:
         return
-    st.markdown("**Was this section useful?**")
-    for i, section in enumerate(view.brief.get("sections", [])):
-        title, up, down = st.columns([10, 1, 1])
-        title.markdown(section.get("title", f"Section {i + 1}"))
-        for col, is_up, icon in ((up, True, "👍"), (down, False, "👎")):
-            if col.button(icon, key=f"fb-{view.run_id}-{i}-{is_up}"):
-                store = open_store(cfg)
-                try:
-                    final = {"brief": view.brief, "evidence": view.evidence}
-                    result = apply_feedback(store, view.run_id, final, section["title"], is_up)
-                finally:
-                    store.close()
-                if result:
-                    _, domains, lessons = result
-                    st.toast(f"Saved: {len(domains)} sources and {len(lessons)} lessons updated")
+    store = open_store(cfg)
+    try:
+        result = apply_feedback(store, run_id, final, title, value == 1)
+    finally:
+        store.close()
+    if result:
+        _, domains, lessons = result
+        st.session_state["feedback_toast"] = (
+            f"Saved: {len(domains)} sources and {len(lessons)} lessons updated"
+        )
 
 
 def render_brief(view: RunView, cfg: Settings, interactive: bool) -> None:
-    """Score, brief with clickable citations, feedback."""
+    """The brief with clickable citations and a 👍/👎 pair beside each section heading."""
     st.subheader("Brief")
-    if view.status == "failed" or not view.report_md:
+    final = {"brief": view.brief, "evidence": view.evidence}
+    ready = presentable(final) if view.brief else None
+    if view.status == "failed" or (ready is None and not view.report_md):
         st.warning("No brief was produced for this run.")
         return
-    if view.score:
-        st.metric("Score", view.score)
-    # The recorded report may carry an older free-text score; show the validated one.
-    score_line = f"**Score:** {view.score}" if view.score else ""
-    body = re.sub(r"^\*\*Score:\*\* .*$", score_line, view.report_md, count=1, flags=re.M)
-    body = linkify(body)
-    # Demote the report's headings so the brief sits inside the page (H1 -> H3, H2 -> H4).
-    body = re.sub(r"^(#{1,2}) ", lambda m: "#" * (len(m.group(1)) + 2) + " ", body, flags=re.M)
-    st.markdown(body)
-    if interactive:
-        render_feedback(view, cfg)
+    if ready is None:  # very old traces: only the rendered report exists
+        st.markdown(demote(linkify(escape_md(view.report_md))))
+        return
+    parts = render_parts(*ready, view.run_id)
+    link = citation_linker(parts.tail)
+    st.markdown(demote(link(parts.header)))
+    for i, (title, body) in enumerate(parts.sections):
+        if interactive:
+            thumbs, heading = st.columns([0.55, 9.45], vertical_alignment="center", gap="small")
+            heading.markdown(f"#### {escape_md(title)}")
+            key = f"fb-{view.run_id}-{i}"
+            with thumbs:
+                st.feedback(
+                    "thumbs",
+                    key=key,
+                    on_change=_feedback_changed,
+                    args=(cfg, view.run_id, key, title, final),
+                )
+        else:
+            st.markdown(f"#### {escape_md(title)}")
+        st.markdown(link(body))
+    st.markdown(demote(parts.tail))
+    message = st.session_state.pop("feedback_toast", None)
+    if message:
+        st.toast(message)
 
 
 def render_view(view: RunView, cfg: Settings, badge: str | None, interactive: bool) -> None:
     """Draw a whole run (used while streaming and for the final view)."""
     render_badge(badge)
-    st.markdown(f"**Goal:** {view.goal or '…'}")
+    st.markdown(f"**Goal:** {escape_md(view.goal) if view.goal else '…'}")
     render_recall(view)
     render_stages(view)
     left, right = st.columns([2, 3])
     with left:
         render_plan(view)
     with right:
-        render_trace(view, expanded_step=None if view.finished else view._current)
+        render_trace(view)
     if view.finished:
         render_metrics(view)
         render_brief(view, cfg, interactive)
@@ -373,15 +442,15 @@ def run_tab(cfg: Settings, mode: str, picked: SavedRun | None, delay: float) -> 
         )
 
 
-def runs_frame(store: MemoryStore) -> pd.DataFrame:
-    """Runs from the memory store as a table."""
+def runs_frame(runs: list[dict[str, Any]]) -> pd.DataFrame:
+    """Runs (memory-store rows or recorded runs) as a table."""
     rows = []
-    for r in store.runs():
+    for r in runs:
         m = r["metrics"]
         rows.append(
             {
                 "run": r["id"],
-                "purpose": r["purpose_type"],
+                "purpose": purpose_label(r["purpose_type"]),
                 "target": ", ".join(r["targets"]),
                 "tool calls": m.get("tool_calls", 0),
                 "cache hits": m.get("cache_hits", 0),
@@ -408,13 +477,18 @@ COMPARE_KEYS = (
 )
 
 
+def run_option(r: dict[str, Any]) -> str:
+    """Picker label for a run row."""
+    return f"{r['id']} · {purpose_label(r['purpose_type'])} · {', '.join(r['targets'])}"
+
+
 def compare_runs(runs: list[dict[str, Any]]) -> None:
     """Pick two runs and show their metrics side by side with the difference."""
     st.subheader("Compare two runs")
     if len(runs) < 2:
-        st.caption("Needs at least two runs in memory.")
+        st.caption("Needs at least two runs.")
         return
-    labels = {f"{r['id']} · {r['purpose_type']} · {', '.join(r['targets'])}": r for r in runs}
+    labels = {run_option(r): r for r in runs}
     names = list(labels)
     left, right = st.columns(2)
     a = labels[left.selectbox("Run A", names, index=0, key="cmp-a")]
@@ -428,60 +502,125 @@ def compare_runs(runs: list[dict[str, Any]]) -> None:
     st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
 
 
+def plan_markdown(run: RecordedRun) -> str:
+    """A run's goal, purpose, plan (memory and replanned steps marked) and injected lessons."""
+    lines = [
+        f"**{purpose_label(run.purpose_type)}** · {escape_md(', '.join(run.targets))}",
+        "",
+        f"_{escape_md(run.goal)}_",
+        "",
+    ]
+    for step in run.steps:
+        marks = ""
+        if step.get("answered_from_memory"):
+            marks += " 🧠 _from memory_"
+        if step.get("is_followup"):
+            marks += " ➕ _added by replan_"
+        lines.append(f"{step.get('id', '?')}. {escape_md(str(step.get('question', '')))}{marks}")
+    if run.lessons_injected:
+        lines += ["", "**Lessons injected:**"]
+        lines += [f"- 📚 {escape_md(t)}" for t in run.lessons_injected]
+    return "\n".join(lines)
+
+
+def compare_plans(recorded: list[RecordedRun]) -> None:
+    """Two runs' plans side by side: same company, different purpose -> different plan."""
+    st.subheader("Compare plans")
+    with_plans = [r for r in recorded if r.steps]
+    if len(with_plans) < 2:
+        st.caption("Needs at least two recorded runs with a plan.")
+        return
+    labels = {run_option(r.as_row()): r for r in with_plans}
+    names = list(labels)
+    left, right = st.columns(2)
+    a = labels[left.selectbox("Plan A", names, index=0, key="plan-a")]
+    b = labels[right.selectbox("Plan B", names, index=len(names) - 1, key="plan-b")]
+    left.markdown(plan_markdown(a))
+    right.markdown(plan_markdown(b))
+
+
+def sources_tables(sources: list[dict[str, Any]]) -> None:
+    """Top and bottom 5 sources."""
+    top, bottom = st.columns(2)
+    worst = sorted(sources, key=lambda s: (s["score"], -s["useless"]))[:5]
+    for col, title, rows in (
+        (top, "Top 5 sources", sources[:5]),
+        (bottom, "Bottom 5 sources", worst),
+    ):
+        col.markdown(f"**{title}**")
+        if rows:
+            table = pd.DataFrame(rows).set_index("domain")
+            col.table(table.assign(score=table["score"].map(lambda v: f"{v:.2f}")))
+        else:
+            col.caption("None yet.")
+
+
+def store_lessons(store: MemoryStore) -> list[dict[str, Any]]:
+    """Lessons from the memory database."""
+    uses = store.lesson_uses()
+    return [
+        {
+            "purpose": purpose_label(lesson.purpose_type),
+            "lesson": lesson.text,
+            "votes": f"+{lesson.votes_up}/-{lesson.votes_down}",
+            "score": round(score(lesson.votes_up, lesson.votes_down), 2),
+            "uses": uses.get(lesson.id or 0, 0),
+        }
+        for lesson in store.lessons()
+    ]
+
+
+INSIGHT_SOURCES = ("Recorded runs (runs/ + examples/)", "Memory database")
+
+
 def insights_tab(cfg: Settings) -> None:
-    """Runs, charts, lessons, sources and the run comparison."""
+    """Runs, charts, lessons, sources, run comparison and plan comparison."""
+    recorded = recorded_runs(cfg.runs_dir, cfg.examples_dir)
     store = open_store(cfg)
     try:
-        frame = runs_frame(store)
-        st.subheader("Runs")
-        if frame.empty:
-            st.caption("No runs in memory yet.")
+        db_runs = store.runs()
+        default = 1 if len(db_runs) >= 2 else 0
+        source = st.radio(
+            "Source", INSIGHT_SOURCES, index=default, horizontal=True, key="insights-source"
+        )
+        if source == "Memory database":
+            runs, sources = db_runs, store.sources()
+            lessons = store_lessons(store)
         else:
-            st.dataframe(frame, hide_index=True, width="stretch")
-            chart = frame.assign(
-                run=[
-                    f"{r[-4:]} · {p.split('_')[0]}"
-                    for r, p in zip(frame["run"], frame["purpose"], strict=True)
-                ]
-            ).set_index("run")
-            c1, c2 = st.columns(2)
-            c1.markdown("**Tokens per run**")
-            c1.bar_chart(chart[["tokens"]])
-            c2.markdown("**Tool calls per run**")
-            c2.bar_chart(chart[["tool calls"]])
-        st.subheader("Lessons")
-        uses = store.lesson_uses()
-        lessons = [
-            {
-                "id": lesson.id,
-                "purpose": lesson.purpose_type,
-                "lesson": lesson.text,
-                "votes": f"+{lesson.votes_up}/-{lesson.votes_down}",
-                "score": round(score(lesson.votes_up, lesson.votes_down), 2),
-                "uses": uses.get(lesson.id or 0, 0),
-            }
-            for lesson in store.lessons()
-        ]
-        if lessons:
-            st.table(pd.DataFrame(lessons).set_index("id"))
-        else:
-            st.caption("No lessons yet.")
-        sources = store.sources()
-        top, bottom = st.columns(2)
-        worst = sorted(sources, key=lambda s: (s["score"], -s["useless"]))[:5]
-        for col, title, rows in (
-            (top, "Top 5 sources", sources[:5]),
-            (bottom, "Bottom 5 sources", worst),
-        ):
-            col.markdown(f"**{title}**")
-            if rows:
-                table = pd.DataFrame(rows).set_index("domain")
-                col.table(table.assign(score=table["score"].map(lambda v: f"{v:.2f}")))
-            else:
-                col.caption("None yet.")
-        compare_runs(store.runs())
+            runs = [r.as_row() for r in recorded]
+            sources = recorded_sources(recorded)
+            lessons = [
+                {k: r[k] for k in ("purpose", "lesson", "votes", "score", "uses", "learned in")}
+                | {"purpose": purpose_label(r["purpose"])}
+                for r in recorded_lessons(recorded)
+            ]
     finally:
         store.close()
+    frame = runs_frame(runs)
+    st.subheader("Runs")
+    if frame.empty:
+        st.caption("No runs yet.")
+    else:
+        st.dataframe(frame, hide_index=True, width="stretch")
+        chart = frame.assign(
+            run=[
+                f"{r[-4:]} · {p.split()[0].lower()}"
+                for r, p in zip(frame["run"], frame["purpose"], strict=True)
+            ]
+        ).set_index("run")
+        c1, c2 = st.columns(2)
+        c1.markdown("**Tokens per run**")
+        c1.bar_chart(chart[["tokens"]])
+        c2.markdown("**Tool calls per run**")
+        c2.bar_chart(chart[["tool calls"]])
+    st.subheader("Lessons")
+    if lessons:
+        st.table(pd.DataFrame(lessons))
+    else:
+        st.caption("No lessons yet.")
+    sources_tables(sources)
+    compare_runs(runs)
+    compare_plans(recorded)
 
 
 def how_it_works_tab() -> None:

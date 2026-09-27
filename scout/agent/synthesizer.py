@@ -6,11 +6,15 @@ Sources list and an Unknowns section.
 
 from __future__ import annotations
 
+import re
+from dataclasses import dataclass
+
 from scout.agent.executor import EvidenceLedger
+from scout.briefclean import clean_brief
 from scout.llm import LLM
-from scout.playbooks import Playbook, playbook_brief
+from scout.playbooks import Playbook, playbook_brief, purpose_label
 from scout.prompts import load_prompt
-from scout.schemas import Brief, Claim, Section, Task
+from scout.schemas import Brief, Claim, Evidence, Section, Task
 from scout.scoring import SCORE_FORMATS, normalize_score
 
 
@@ -46,6 +50,7 @@ def synthesize(
         + SCORE_FORMATS.get(playbook.purpose_type, SCORE_FORMATS["general"]),
         evidence=_ledger_text(ledger),
         critic_unknowns="\n".join(f"- {q}" for q in critic_unknowns or []) or "- none",
+        takeaways=TAKEAWAYS.get(playbook.purpose_type, TAKEAWAYS["general"]),
         budget_note=note,
     )
     brief = llm.complete_json(
@@ -65,10 +70,10 @@ def fallback_brief(
     """Deterministic brief (no LLM) listing each evidence item as a cited claim."""
     claims = [Claim(text=e.claim, evidence_ids=[e.id]) for e in ledger.items]
     return Brief(
-        title=f"{' and '.join(task.targets)}: research notes",
+        title=f"{' and '.join(task.targets)}: verified facts",
         purpose_type=task.purpose_type,
-        sections=[Section(title="Key findings", claims=claims)],
-        unknowns=[f"Synthesis failed; sections {', '.join(playbook.sections)} were not written."],
+        sections=[Section(title="Key facts", claims=claims)],
+        unknowns=[f"Not written this time: {', '.join(playbook.sections)}."],
         budget_note=budget_note,
     )
 
@@ -81,8 +86,37 @@ def citation_stats(brief: Brief, ledger: EvidenceLedger) -> tuple[int, int]:
     return cited, len(claims)
 
 
-def render_markdown(brief: Brief, ledger: EvidenceLedger, run_id: str) -> str:
-    """Render the Brief with numbered citations, a Sources list and Unknowns."""
+def escape_md(text: str) -> str:
+    """Escape "$" so Streamlit and GitHub do not render money amounts as LaTeX."""
+    return re.sub(r"(?<!\\)\$", r"\\$", text)
+
+
+TAKEAWAYS = {
+    "sales_prospect": "For a sales prospect: the fit verdict, the pitch angle, and the main risk.",
+    "competitor": "For a competitor: the threat verdict, their strongest move, and our opening.",
+    "interview_prep": "For interview prep: the 3 things the candidate must prepare.",
+    "general": "The 3 facts that best answer the goal.",
+}
+
+
+@dataclass
+class BriefParts:
+    """The rendered brief split around section headings (the UI adds feedback beside them)."""
+
+    header: str
+    sections: list[tuple[str, str]]  # (heading, body)
+    tail: str
+
+    def markdown(self) -> str:
+        """The whole brief as one Markdown document."""
+        parts = [self.header]
+        parts += [f"## {escape_md(title)}\n\n{body}" for title, body in self.sections]
+        parts.append(self.tail)
+        return "\n".join(parts) + "\n"
+
+
+def render_parts(brief: Brief, ledger: EvidenceLedger, run_id: str) -> BriefParts:
+    """Render the Brief with numbered citations (one number per source URL), escaped text."""
     known = ledger.by_id()
     numbers: dict[str, int] = {}  # source URL -> citation number
 
@@ -97,22 +131,61 @@ def render_markdown(brief: Brief, ledger: EvidenceLedger, run_id: str) -> str:
                 refs.append(num)
         return "".join(f"[{n}]" for n in sorted(refs)) if refs else "_(unsupported)_"
 
-    lines = [f"# {brief.title}", "", f"_Purpose: {brief.purpose_type} · Run `{run_id}`_", ""]
+    def bullet(claim: Claim) -> str:
+        return f"- {escape_md(claim.text)} {cite(claim)}".rstrip()
+
+    head = [
+        f"# {escape_md(brief.title)}",
+        "",
+        f"_Purpose: {purpose_label(brief.purpose_type)} · Run `{run_id}`_",
+        "",
+    ]
     if brief.budget_note:
-        lines += [f"> **Partial brief:** the run stopped early ({brief.budget_note}).", ""]
+        head += [f"> **Partial brief:** the run stopped early ({brief.budget_note}).", ""]
     if brief.score:
-        lines += [f"**Score:** {brief.score}", ""]
-        lines += [f"- {r}" for r in brief.score_reasons]
-        lines.append("")
+        head += [f"**Score:** {brief.score}", ""]
+        head += [f"- {escape_md(r)}" for r in brief.score_reasons]
+        head.append("")
+    if brief.summary:
+        head += ["**Key takeaways**", ""]
+        head += [bullet(c) for c in brief.summary]
+        head.append("")
+    sections = []
     for section in brief.sections:
-        lines += [f"## {section.title}", ""]
-        if not section.claims:
-            lines += ["_No verified findings._", ""]
-            continue
-        lines += [f"- {c.text} {cite(c)}".rstrip() for c in section.claims]
-        lines.append("")
-    lines += ["## Unknowns", ""]
-    lines += [f"- {u}" for u in brief.unknowns] or ["- None"]
-    lines += ["", "## Sources", ""]
-    lines += [f"{n}. <{url}>" for url, n in numbers.items()] or ["_No sources cited._"]
-    return "\n".join(lines) + "\n"
+        body = (
+            "\n".join(bullet(c) for c in section.claims)
+            if section.claims
+            else ("_Nothing verified for this section._")
+        )
+        sections.append((section.title, body + "\n"))
+    tail = ["## Unknowns", ""]
+    tail += [f"- {escape_md(u)}" for u in brief.unknowns] or ["- None"]
+    tail += ["", "## Sources", ""]
+    tail += [f"{n}. <{url}>" for url, n in numbers.items()] or ["_No sources cited._"]
+    return BriefParts("\n".join(head), sections, "\n".join(tail))
+
+
+def render_markdown(brief: Brief, ledger: EvidenceLedger, run_id: str) -> str:
+    """Render the Brief with numbered citations, a Sources list and Unknowns."""
+    return render_parts(brief, ledger, run_id).markdown()
+
+
+def presentable(payload: dict) -> tuple[Brief, EvidenceLedger] | None:
+    """Brief and ledger from a run_finished payload, with today's display rules applied.
+
+    Recorded briefs from older runs get the fixed score format, the jargon filter and claim
+    dedupe, so a replay and a regenerated report.md show what a new run would.
+    """
+    raw = payload.get("brief")
+    if not isinstance(raw, dict):
+        return None
+    ledger = EvidenceLedger(items=[Evidence.model_validate(e) for e in payload.get("evidence", [])])
+    brief = Brief.model_validate(raw)
+    score = normalize_score(brief.purpose_type, brief.score, brief.score_reasons)
+    return clean_brief(brief.model_copy(update={"score": score})), ledger
+
+
+def render_from_payload(payload: dict, run_id: str) -> str | None:
+    """Re-render report.md from a run_finished payload (brief + evidence), e.g. for examples."""
+    result = presentable(payload)
+    return render_markdown(*result, run_id) if result else None

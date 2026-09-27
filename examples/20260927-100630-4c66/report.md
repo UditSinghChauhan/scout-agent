@@ -1,12 +1,6 @@
 # Zoho SDE Intern Interview Prep
 
-_Purpose: interview_prep · Run `20260927-100630-4c66`_
-
-**Score:** Pass
-
-- All required sections are populated with claims supported by the evidence ledger.
-- The tech stack, interview process, and company context are clearly defined based on available sources.
-- No critical unknowns prevent the candidate from preparing effectively for the stated interview targets.
+_Purpose: Interview prep · Run `20260927-100630-4c66`_
 
 ## Company in 60 seconds
 
@@ -32,12 +26,11 @@ _Purpose: interview_prep · Run `20260927-100630-4c66`_
 
 ## Smart questions to ask
 
-- How does the engineering team balance the use of Java for enterprise-grade functionality with C and C++ for performance-critical modules like indexing engines? [1]
-- How does Zoho's philosophy of sustainable growth without VC funding influence the pace of development and product prioritization for intern projects? [2]
+_Nothing verified for this section._
 
 ## Unknowns
 
-- None recorded.
+- None
 
 ## Sources
 

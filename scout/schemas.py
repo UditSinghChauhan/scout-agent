@@ -194,6 +194,9 @@ class Brief(BaseModel):
 
     title: str
     purpose_type: PurposeType = "general"
+    summary: list[Claim] = Field(
+        default_factory=list, description="3 decisive takeaways that answer the goal."
+    )
     sections: list[Section] = Field(default_factory=list)
     score: str | None = Field(
         default=None, description="Fit score, threat level or readiness, per playbook."

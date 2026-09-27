@@ -1,8 +1,8 @@
 # Unstop Competitor Brief
 
-_Purpose: competitor · Run `20260927-091106-7ac2`_
+_Purpose: Competitor · Run `20260927-091106-7ac2`_
 
-**Score:** medium
+**Score:** Threat: Medium
 
 
 ## Positioning
@@ -13,7 +13,7 @@ _Purpose: competitor · Run `20260927-091106-7ac2`_
 
 ## Pricing
 
-_No verified findings._
+_Nothing verified for this section._
 
 ## Recent moves
 

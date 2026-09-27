@@ -91,11 +91,24 @@ PLAYBOOKS: dict[str, Playbook] = {
         purpose_type="general",
         description="General company research; the planner decides what matters.",
         research_hints=("Planner decides",),
-        sections=("Summary", "Key findings", "Open questions"),
+        sections=("Summary", "Key facts", "Open questions"),
         score_name=None,
         score_rubric=None,
     ),
 }
+
+
+PURPOSE_LABELS = {
+    "sales_prospect": "Sales prospect",
+    "competitor": "Competitor",
+    "interview_prep": "Interview prep",
+    "general": "General research",
+}
+
+
+def purpose_label(purpose_type: str) -> str:
+    """Human label for a purpose ("Interview prep", never snake_case)."""
+    return PURPOSE_LABELS.get(purpose_type, purpose_type.replace("_", " ").capitalize())
 
 
 def get_playbook(purpose_type: str) -> Playbook:

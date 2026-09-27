@@ -16,7 +16,16 @@ from scout.scoring import normalize_score
 
 STAGES = ("intake", "recall", "plan", "execute", "synthesize", "verify", "reflect")
 _STAGE_ALIASES = {"critique": "execute"}  # critique alternates with execution per step
-STEP_STATUSES = ("pending", "running", "done", "from memory", "retried", "unknown")
+STEP_STATUSES = (
+    "pending",
+    "running",
+    "done",
+    "from memory",
+    "retried",
+    "unknown",
+    "skipped (budget)",
+    "not reached",
+)
 
 
 @dataclass
@@ -39,7 +48,41 @@ class StepView:
     fact_ids: list[int] = field(default_factory=list)
     retries: int = 0
     verdict: str | None = None
+    approach: str | None = None
+    tool_calls: int = 0
     entries: list[TraceEntry] = field(default_factory=list)
+
+    @property
+    def status_path(self) -> str:
+        """Status with its history, e.g. "retried → done"."""
+        if self.retries and self.status in ("retried", "done"):
+            return "retried → done"
+        if self.retries and self.status == "unknown":
+            return "retried → unknown"
+        return self.status
+
+    @property
+    def summary(self) -> str:
+        """One-line expander title, e.g. "Step 2 · retried → done · 4 tool calls · critic: …"."""
+        parts = [f"Step {self.id}", self.status_path]
+        if self.status == "from memory":
+            parts.append(f"{len(self.fact_ids)} facts from memory")
+        elif self.tool_calls:
+            parts.append(f"{self.tool_calls} tool call{'s' if self.tool_calls != 1 else ''}")
+        if self.verdict:
+            critic = f"critic: {self.verdict}"
+            if self.approach:
+                short = self.approach if len(self.approach) <= 50 else self.approach[:47] + "…"
+                critic += f" (new approach: {short})"
+            parts.append(critic)
+        if self.replanned:
+            parts.append("added by replan")
+        return " · ".join(parts)
+
+    @property
+    def notable(self) -> bool:
+        """Open by default after a run: retry, replan, memory hit or unknown verdict."""
+        return bool(self.retries or self.replanned or self.status in ("from memory", "unknown"))
 
 
 @dataclass
@@ -169,6 +212,7 @@ def _on_step_started(view: RunView, p: dict[str, Any], event: Event) -> None:
     view._current = step.id
     if p.get("approach"):
         step.retries += 1
+        step.approach = str(p["approach"])
         step.entries.append(TraceEntry("retry", f"Retry with new approach: {p['approach']}"))
     step.status = "running"
 
@@ -195,6 +239,9 @@ def _on_thought(view: RunView, p: dict[str, Any], event: Event) -> None:
 def _on_tool_call(view: RunView, p: dict[str, Any], event: Event) -> None:
     args = ", ".join(f"{k}={v!r}" for k, v in (p.get("args") or {}).items())
     _entry_target(view, p).append(TraceEntry("tool", f"{p.get('tool', '?')}({args})"))
+    step = view.step(p.get("step_id")) or view.step(view._current)
+    if step is not None:
+        step.tool_calls += 1
 
 
 def _on_tool_result(view: RunView, p: dict[str, Any], event: Event) -> None:
@@ -215,6 +262,8 @@ def _on_critique(view: RunView, p: dict[str, Any], event: Event) -> None:
     if step is None:
         return
     step.verdict = verdict
+    if p.get("new_approach"):
+        step.approach = str(p["new_approach"])
     if verdict == "unknown":
         step.status = "unknown"
     elif verdict == "retry":
@@ -288,10 +337,14 @@ def _on_run_finished(view: RunView, p: dict[str, Any], event: Event) -> None:
     plan = p.get("plan")
     if isinstance(plan, dict):
         _add_steps(view, plan.get("steps", []))
+    metrics = view.metrics
+    budget_stop = bool(metrics.get("budget_exhausted") or metrics.get("budget_reason"))
     for step in view.steps:
         if step.status == "running":
             # A retry verdict the run could not honour (cap reached) ends unresolved.
             step.status = "unknown" if step.verdict == "retry" else "done"
+        elif step.status == "pending":
+            step.status = "skipped (budget)" if budget_stop else "not reached"
     for name, status in view.stages.items():
         if status == "running":
             view.stages[name] = "done"
