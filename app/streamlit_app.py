@@ -368,7 +368,7 @@ def render_view(view: RunView, cfg: Settings, badge: str | None, interactive: bo
 
 
 def replay_badge(run: SavedRun) -> str:
-    """The replay label (the video must never pass a replay off as live)."""
+    """The replay label (a replay must never pass as a live run)."""
     recorded = run.recorded.replace("T", " ")
     return f"Replay of recorded run {run.run_id}, recorded {recorded}"
 
