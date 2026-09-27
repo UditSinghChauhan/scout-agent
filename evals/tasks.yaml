@@ -1,0 +1,12 @@
+# Live eval tasks: one per purpose. Run with (spends real LLM and search quota):
+#   python -m scout eval --live evals/tasks.yaml
+tasks:
+  - id: sales-zoho
+    purpose: sales_prospect
+    goal: "We sell a campus hiring-challenge platform. Research Zoho as a prospect and tell us how to pitch."
+  - id: competitor-unstop
+    purpose: competitor
+    goal: "We run a hiring-challenge platform. Analyse Unstop as a competitor, including their pricing."
+  - id: interview-freshworks
+    purpose: interview_prep
+    goal: "Prep me for an SDE intern interview at Freshworks."

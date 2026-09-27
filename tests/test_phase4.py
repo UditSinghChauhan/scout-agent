@@ -41,7 +41,7 @@ def test_reducer_happy_path_on_fixture() -> None:
     assert [lesson["text"] for lesson in view.lessons_injected] == [
         "Read the careers page before generic news searches."
     ]
-    assert view.brief and view.score == "Ready"
+    assert view.brief and view.score == "Readiness 2/3"
     assert view.metrics["citation_coverage"] == 100.0
     assert view.lessons_learned and view.lessons_learned[0]["text"].startswith("For interview")
 
@@ -134,7 +134,7 @@ def test_app_replay_smoke(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> No
     assert "Company in 60 seconds?" in markdown  # plan panel
     assert "## Sources" in markdown and "[[1]](https://en.wikipedia.org" in markdown  # brief
     metrics = {m.label: m.value for m in at.metric}
-    assert metrics["Score"] == "Ready" and metrics["Memory steps"] == "1"
+    assert metrics["Score"] == "Readiness 2/3" and metrics["Memory steps"] == "1"
     labels = [e.label for e in at.expander]
     assert any(label.startswith("Step 2 · retried") for label in labels)
 
@@ -230,8 +230,8 @@ def test_feedback_click_persists_and_changes_insights(
     store = MemoryStore(tmp_path / "data" / "scout.db")
     assert store.source_scores()["en.wikipedia.org"] == pytest.approx(2 / 3)
     assert store.feedback()[0]["section"] == "Company in 60 seconds"
-    frames = [df.value for df in at.dataframe]
-    assert any("en.wikipedia.org" in df.to_string() for df in frames)  # Insights top sources
+    tables = [t.value for t in at.table]
+    assert any("en.wikipedia.org" in t.to_string() for t in tables)  # Insights top sources
 
 
 def test_compare_two_runs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

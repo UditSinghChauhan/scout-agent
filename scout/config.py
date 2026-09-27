@@ -7,7 +7,9 @@ from scout/config.py"). Values come from environment variables, optionally seede
 
 from __future__ import annotations
 
+import functools
 import os
+import subprocess
 from collections.abc import Mapping
 from dataclasses import dataclass, field, fields, replace
 from pathlib import Path
@@ -92,6 +94,7 @@ class Settings:
     # Paths.
     data_dir: Path = REPO_ROOT / "data"
     runs_dir: Path = REPO_ROOT / "runs"
+    examples_dir: Path = REPO_ROOT / "examples"  # committed real runs, replayable with no key
 
     @property
     def fast_model(self) -> str:
@@ -173,8 +176,12 @@ def load_settings(
     """Build settings from ``env`` (default ``os.environ``) layered over ``env_file``.
 
     Real environment variables win over the .env file. Empty values keep the default.
-    Pass ``env_file=None`` to ignore any .env file (tests do this).
+    Pass ``env_file=None`` to ignore any .env file (tests do this). The ``SCOUT_ENV_FILE``
+    environment variable overrides the default path ("none" disables the file).
     """
+    override = os.environ.get("SCOUT_ENV_FILE")
+    if override is not None and env_file == DEFAULT_ENV_FILE:
+        env_file = None if override.strip().lower() in ("", "none") else Path(override)
     merged: dict[str, str] = read_env_file(env_file) if env_file else {}
     merged.update(os.environ if env is None else env)
     defaults = Settings()
@@ -184,6 +191,30 @@ def load_settings(
         if raw.strip():
             kwargs[f.name] = _coerce(f.name, raw, getattr(defaults, f.name))
     return Settings(**kwargs)
+
+
+@functools.cache
+def git_commit() -> str:
+    """Short commit hash of the working tree ("+dirty" if modified), or "unknown"."""
+    try:
+        head = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=True,
+        ).stdout.strip()
+        dirty = subprocess.run(
+            ["git", "status", "--porcelain", "--untracked-files=no"],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        ).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return "unknown"
+    return f"{head}+dirty" if dirty else head or "unknown"
 
 
 # --- LLM routing table (A1). No secrets here: keys are read from Settings by provider name. ---
@@ -253,6 +284,11 @@ def provider_key(settings: Settings, provider: Provider) -> str:
     if not key and settings.llm_api_key and same_host:
         key = settings.llm_api_key
     return key
+
+
+def llm_configured(settings: Settings) -> bool:
+    """True if any LLM key is available (router provider keys or LLM_API_KEY)."""
+    return bool(settings.llm_api_key or settings.groq_api_key or settings.gemini_api_key)
 
 
 def router_enabled(settings: Settings) -> bool:

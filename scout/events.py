@@ -33,6 +33,7 @@ EventType = Literal[
     "retry",
     "provider_switched",
     "llm_call",
+    "rate_limited",
 ]
 
 

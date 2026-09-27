@@ -17,9 +17,11 @@ from rich.table import Table
 
 from scout.agent.orchestrator import Orchestrator
 from scout.config import load_settings
+from scout.eval import load_tasks, write_results
 from scout.events import Event, RunRecorder, load_trace
 from scout.insights import apply_feedback, insights_tables
 from scout.memory.store import MemoryStore, reset_memory
+from scout.ui.viewmodel import wait_line
 
 app = typer.Typer(add_completion=False, help="Scout: purpose-aware company research agent.")
 console = Console()
@@ -44,6 +46,12 @@ def _render_plan(payload: dict[str, Any]) -> None:
     console.print(table)
     for lesson in payload.get("lessons", []):
         console.print(f"  [green]lesson injected[/] L{lesson['id']}: {lesson['text']}")
+
+
+def _print_wait(kind: str, payload: dict[str, Any]) -> None:
+    """Show a rate-limit wait the moment it starts (no silent gaps)."""
+    if kind == "rate_limited":
+        console.print(f"  [dim]⏳ {wait_line(payload)}[/]")
 
 
 def render_event(event: Event) -> None:
@@ -143,7 +151,7 @@ def run(
         overrides["max_total_steps"] = max(max_steps, settings.max_total_steps)
     settings = settings.with_overrides(**overrides)
 
-    orchestrator = Orchestrator(settings)
+    orchestrator = Orchestrator(settings, listener=_print_wait)
     recorder = RunRecorder(settings.runs_dir, orchestrator.run_id)
     console.print(f"[dim]run_id {orchestrator.run_id} -> {recorder.run_dir}[/]")
     for event in recorder.record(orchestrator.run(goal, user_context)):
@@ -211,6 +219,36 @@ def reset(
     settings = load_settings()
     removed = reset_memory(settings.db_path, settings.cache_dir if cache else None)
     console.print(f"Removed: {', '.join(removed) or 'nothing (already clean)'}")
+
+
+@app.command("eval")
+def eval_cmd(
+    from_runs: Annotated[
+        bool, typer.Option("--from-runs", help="Score recorded runs in runs/ and examples/.")
+    ] = False,
+    live: Annotated[
+        Path | None, typer.Option("--live", help="Run the tasks in this YAML first (real quota).")
+    ] = None,
+    out: Annotated[Path, typer.Option(help="Results file.")] = Path("evals/results.md"),
+) -> None:
+    """Write evals/results.md from recorded runs, or run a task set live and score it."""
+    settings = load_settings()
+    if live is None and not from_runs:
+        raise typer.BadParameter("use --from-runs or --live <tasks.yaml>")
+    if live is not None:
+        tasks = load_tasks(live)
+        live_dir = settings.runs_dir
+        for task in tasks:
+            console.rule(f"[bold]eval task {task.get('id', '?')}")
+            orchestrator = Orchestrator(settings, listener=_print_wait)
+            recorder = RunRecorder(settings.runs_dir, orchestrator.run_id)
+            for event in recorder.record(orchestrator.run(task["goal"])):
+                render_event(event)
+        dirs = [live_dir, settings.examples_dir]
+    else:
+        dirs = [settings.examples_dir, settings.runs_dir]
+    rows = write_results(dirs, out)
+    console.print(f"Scored {len(rows)} runs -> {out}")
 
 
 @app.command()

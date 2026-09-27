@@ -9,9 +9,11 @@ Never prints keys.
 
 from __future__ import annotations
 
+import os
 import sys
 import time
 from pathlib import Path
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -33,6 +35,24 @@ ANSWERED = (
 )
 
 
+MAX_CALLS = int(os.environ.get("SCOUT_CHECK_MAX_CALLS", "3"))
+
+
+class CappedBackend:
+    """Refuse requests beyond MAX_CALLS per model (the probe must stay cheap)."""
+
+    def __init__(self, inner: OpenAIBackend) -> None:
+        self.inner = inner
+        self.calls = 0
+
+    def chat(self, **kwargs: Any) -> Any:
+        """Forward one request unless the cap is reached."""
+        if self.calls >= MAX_CALLS:
+            raise LLMError(f"call cap of {MAX_CALLS} reached")
+        self.calls += 1
+        return self.inner.chat(**kwargs)
+
+
 def check(candidate: Candidate) -> str:
     """Run the two executor turns against one candidate; return a one-line verdict."""
     settings = load_settings()
@@ -43,7 +63,7 @@ def check(candidate: Candidate) -> str:
     backend = OpenAIBackend(
         key, provider.base_url, settings.llm_timeout_s, provider.name, dict(candidate.params)
     )
-    llm = LLM(settings=settings, backend=backend)
+    llm = LLM(settings=settings.with_overrides(llm_max_retries=0), backend=CappedBackend(backend))
     system = load_prompt(
         "executor",
         question="What is Zoho's total employee count?",

@@ -23,6 +23,7 @@ from scout.config import (  # noqa: E402
     PROVIDERS,
     ROUTES,
     Settings,
+    llm_configured,
     load_settings,
     provider_key,
     router_enabled,
@@ -31,7 +32,14 @@ from scout.events import RunRecorder  # noqa: E402
 from scout.insights import apply_feedback  # noqa: E402
 from scout.memory.store import MemoryStore, reset_memory, score  # noqa: E402
 from scout.ui.runs import SavedRun, list_runs, load_events  # noqa: E402
-from scout.ui.viewmodel import RunView, StepView, TraceEntry, build_view, reduce  # noqa: E402
+from scout.ui.viewmodel import (  # noqa: E402
+    RunView,
+    StepView,
+    TraceEntry,
+    build_view,
+    reduce,
+    wait_line,
+)
 
 logger = logging.getLogger("scout.ui")
 
@@ -62,11 +70,15 @@ ENTRY_ICONS = {
     "switch": "🔀",
     "error": "⚠️",
     "memory": "🧠",
+    "wait": "⏳",
 }
+NO_KEYS_MESSAGE = "Live mode needs API keys; see README. Replay the example runs below."
 QUIET_EVENTS = {"llm_call"}  # not worth a re-render during streaming
 WORKFLOW_DOT = """
 digraph scout {
-  rankdir=LR; node [shape=box, style="rounded,filled", fillcolor="#eef3fb", fontname="Helvetica"];
+  rankdir=LR; bgcolor="transparent";
+  node [shape=box, style="rounded,filled", fillcolor="#eef3fb", fontname="Helvetica", fontsize=16];
+  edge [fontname="Helvetica", fontsize=13, color="#667085", fontcolor="#667085"];
   Intake -> Recall -> Plan -> Execute -> Critique;
   Critique -> Execute [label="next step / retry"];
   Critique -> Plan [label="follow-up (replan)"];
@@ -110,8 +122,9 @@ def provider_lines(cfg: Settings) -> list[str]:
     if router_enabled(cfg):
         lines = []
         for tier, candidates in ROUTES.items():
-            usable = [c.label for c in candidates if provider_key(cfg, PROVIDERS[c.provider])]
-            lines.append(f"**{tier}**: " + (" → ".join(usable) or "none configured"))
+            usable = [c for c in candidates if provider_key(cfg, PROVIDERS[c.provider])]
+            items = "\n".join(f"{i}. {c.model} ({c.provider})" for i, c in enumerate(usable, 1))
+            lines.append(f"**{tier} tier** (in failover order)\n\n{items or 'none configured'}")
         return lines
     host = cfg.llm_base_url.split("://", 1)[-1].split("/", 1)[0] or "not configured"
     return [
@@ -172,7 +185,7 @@ def render_plan(view: RunView) -> None:
     if not view.steps:
         st.caption("Waiting for the plan…")
     for step in view.steps:
-        chip, text = st.columns([1, 6])
+        chip, text = st.columns([1.6, 6])
         with chip:
             st.badge(step.status, color=STATUS_COLORS.get(step.status, "gray"))
         with text:
@@ -189,6 +202,8 @@ def render_entries(entries: list[TraceEntry]) -> None:
         text = entry.text if len(entry.text) <= 400 else entry.text[:400] + "…"
         if entry.kind == "error":
             st.error(f"{icon} {text}")
+        elif entry.kind == "wait":
+            st.caption(f"{icon} {text}")
         else:
             st.markdown(f"{icon} {text}")
 
@@ -230,7 +245,7 @@ def render_feedback(view: RunView, cfg: Settings) -> None:
         return
     st.markdown("**Was this section useful?**")
     for i, section in enumerate(view.brief.get("sections", [])):
-        title, up, down = st.columns([6, 1, 1])
+        title, up, down = st.columns([10, 1, 1])
         title.markdown(section.get("title", f"Section {i + 1}"))
         for col, is_up, icon in ((up, True, "👍"), (down, False, "👎")):
             if col.button(icon, key=f"fb-{view.run_id}-{i}-{is_up}"):
@@ -253,7 +268,13 @@ def render_brief(view: RunView, cfg: Settings, interactive: bool) -> None:
         return
     if view.score:
         st.metric("Score", view.score)
-    st.markdown(linkify(view.report_md))
+    # The recorded report may carry an older free-text score; show the validated one.
+    score_line = f"**Score:** {view.score}" if view.score else ""
+    body = re.sub(r"^\*\*Score:\*\* .*$", score_line, view.report_md, count=1, flags=re.M)
+    body = linkify(body)
+    # Demote the report's headings so the brief sits inside the page (H1 -> H3, H2 -> H4).
+    body = re.sub(r"^(#{1,2}) ", lambda m: "#" * (len(m.group(1)) + 2) + " ", body, flags=re.M)
+    st.markdown(body)
     if interactive:
         render_feedback(view, cfg)
 
@@ -285,8 +306,10 @@ def show_replay(run: SavedRun, delay: float, cfg: Settings) -> None:
     events = load_events(run)
     badge = replay_badge(run)
     animated = st.session_state.setdefault("animated", set())
+    # One placeholder for every frame and for the final view: nothing from a previously shown
+    # run lingers (faded) below the animation.
+    placeholder = st.empty()
     if delay > 0 and run.run_id not in animated:
-        placeholder = st.empty()
         view = RunView()
         for event in events:
             reduce(view, event)
@@ -295,14 +318,20 @@ def show_replay(run: SavedRun, delay: float, cfg: Settings) -> None:
             with placeholder.container():
                 render_view(view, cfg, badge, interactive=False)
             time.sleep(delay)
-        placeholder.empty()
         animated.add(run.run_id)
-    render_view(build_view(events), cfg, badge, interactive=True)
+    with placeholder.container():
+        render_view(build_view(events), cfg, badge, interactive=True)
 
 
 def run_live(goal: str, cfg: Settings) -> str | None:
     """Stream a live run into the page; returns its run id."""
-    orchestrator = Orchestrator(cfg)
+    status = st.empty()
+
+    def on_wait(kind: str, payload: dict[str, Any]) -> None:
+        if kind == "rate_limited":
+            status.info(f"⏳ {wait_line(payload)}")
+
+    orchestrator = Orchestrator(cfg, listener=on_wait)
     recorder = RunRecorder(cfg.runs_dir, orchestrator.run_id)
     badge = f"Live run {orchestrator.run_id} (streaming now)"
     placeholder = st.empty()
@@ -311,9 +340,11 @@ def run_live(goal: str, cfg: Settings) -> str | None:
         reduce(view, event)
         if event.type in QUIET_EVENTS:
             continue
+        status.empty()
         with placeholder.container():
             render_view(view, cfg, badge, interactive=False)
     placeholder.empty()
+    status.empty()
     return orchestrator.run_id
 
 
@@ -407,7 +438,12 @@ def insights_tab(cfg: Settings) -> None:
             st.caption("No runs in memory yet.")
         else:
             st.dataframe(frame, hide_index=True, width="stretch")
-            chart = frame.set_index("run")
+            chart = frame.assign(
+                run=[
+                    f"{r[-4:]} · {p.split('_')[0]}"
+                    for r, p in zip(frame["run"], frame["purpose"], strict=True)
+                ]
+            ).set_index("run")
             c1, c2 = st.columns(2)
             c1.markdown("**Tokens per run**")
             c1.bar_chart(chart[["tokens"]])
@@ -427,7 +463,7 @@ def insights_tab(cfg: Settings) -> None:
             for lesson in store.lessons()
         ]
         if lessons:
-            st.dataframe(pd.DataFrame(lessons), hide_index=True, width="stretch")
+            st.table(pd.DataFrame(lessons).set_index("id"))
         else:
             st.caption("No lessons yet.")
         sources = store.sources()
@@ -439,7 +475,8 @@ def insights_tab(cfg: Settings) -> None:
         ):
             col.markdown(f"**{title}**")
             if rows:
-                col.dataframe(pd.DataFrame(rows), hide_index=True)
+                table = pd.DataFrame(rows).set_index("domain")
+                col.table(table.assign(score=table["score"].map(lambda v: f"{v:.2f}")))
             else:
                 col.caption("None yet.")
         compare_runs(store.runs())
@@ -472,15 +509,20 @@ def how_it_works_tab() -> None:
 def sidebar(cfg: Settings) -> tuple[str, SavedRun | None, float]:
     """Mode, replay picker, live options, providers, reset. Returns (mode, run, delay)."""
     st.sidebar.title("🔭 Scout")
-    mode = st.sidebar.radio("Mode", ["Replay saved run", "Live run"], key="mode")
+    live_ok = llm_configured(cfg)
+    modes = ["Replay saved run", "Live run"] if live_ok else ["Replay saved run"]
+    mode = st.sidebar.radio("Mode", modes, key="mode")
+    if not live_ok:
+        st.sidebar.info(NO_KEYS_MESSAGE)
     picked: SavedRun | None = None
     delay = 0.0
     if mode == "Replay saved run":
-        runs = list_runs(cfg.runs_dir)
+        runs = list_runs(cfg.runs_dir, cfg.examples_dir)
         if runs:
             picked = st.sidebar.selectbox(
                 "Recorded run", runs, format_func=lambda r: r.label, key="run"
             )
+            st.sidebar.caption(picked.caption)
             st.sidebar.badge(f"REPLAY · {picked.run_id}", color="orange", icon="🔁")
         delay = st.sidebar.slider(
             "Replay speed (seconds per event)", 0.0, 0.5, 0.0, 0.05, key="delay"
@@ -521,7 +563,7 @@ def main() -> None:
     except Exception as exc:  # noqa: BLE001 - never show a stack trace
         friendly_error("loading settings", exc)
         return
-    st.title("Scout")
+    st.markdown("### 🔭 Scout")
     st.caption("Purpose-aware company research that cites its sources and learns with use.")
     run_t, insights_t, how_t = st.tabs(["Run", "Insights", "How it works"])
     with run_t:

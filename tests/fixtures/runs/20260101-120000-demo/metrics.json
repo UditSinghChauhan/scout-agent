@@ -2,8 +2,8 @@
   "run_id": "20260101-120000-demo",
   "tool_calls": 3,
   "llm_calls": 13,
-  "prompt_tokens": 7280,
-  "completion_tokens": 572,
+  "prompt_tokens": 7315,
+  "completion_tokens": 598,
   "latency_s": 0.0,
   "citation_coverage": 100.0,
   "unsupported_claims": 0,
@@ -16,7 +16,7 @@
   "budget_exhausted": false,
   "provider_switches": 0,
   "tokens_by_model": {
-    "fake": 7852
+    "fake": 7913
   },
   "calls_by_model": {
     "fake": 13
@@ -28,12 +28,13 @@
   },
   "retries": 1,
   "replans": 1,
-  "total_tokens": 7852,
+  "total_tokens": 7913,
   "claims": 3,
   "cited_claims": 3,
   "evidence_items": 4,
   "budget_reason": null,
   "injected_lessons": [
     1
-  ]
+  ],
+  "git_commit": "c865c4d+dirty"
 }

@@ -2,8 +2,11 @@
 
 _Purpose: interview_prep · Run `20260101-120000-demo`_
 
-**Score:** Ready
+**Score:** Readiness 2/3
 
+- ready: company basics
+- ready: interview format
+- todo: intern stipend
 
 ## Company in 60 seconds
 

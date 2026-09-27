@@ -11,6 +11,7 @@ from scout.llm import LLM
 from scout.playbooks import Playbook, playbook_brief
 from scout.prompts import load_prompt
 from scout.schemas import Brief, Claim, Section, Task
+from scout.scoring import SCORE_FORMATS, normalize_score
 
 
 def _ledger_text(ledger: EvidenceLedger) -> str:
@@ -41,7 +42,8 @@ def synthesize(
         user_context=task.user_context or "not stated",
         playbook=playbook_brief(playbook),
         sections="\n".join(f"{i}. {s}" for i, s in enumerate(playbook.sections, 1)),
-        score_rule=playbook.score_rubric or "No score for this purpose (score: null).",
+        score_rule=f"{playbook.score_rubric or 'No score.'} Format: "
+        + SCORE_FORMATS.get(playbook.purpose_type, SCORE_FORMATS["general"]),
         evidence=_ledger_text(ledger),
         critic_unknowns="\n".join(f"- {q}" for q in critic_unknowns or []) or "- none",
         budget_note=note,
@@ -51,7 +53,10 @@ def synthesize(
         Brief,
         include_schema=False,
     )
-    return brief.model_copy(update={"purpose_type": task.purpose_type, "budget_note": budget_note})
+    score = normalize_score(task.purpose_type, brief.score, brief.score_reasons)
+    return brief.model_copy(
+        update={"purpose_type": task.purpose_type, "budget_note": budget_note, "score": score}
+    )
 
 
 def fallback_brief(

@@ -49,10 +49,12 @@ def check_config(settings: Settings) -> bool:
     print(f"SCOUT_FAST_MODEL  : {settings.scout_fast_model or '(falls back to SCOUT_MODEL)'}")
     print(f"TAVILY_API_KEY    : {'set' if settings.has_tavily else 'not set (DuckDuckGo only)'}")
     print(f"Search providers  : {[name for name, _ in default_providers(settings)]}")
-    print(f"Budgets           : steps={settings.max_planned_steps}/{settings.max_total_steps}, "
-          f"react={settings.max_react_iterations}, tools={settings.max_tool_calls}, "
-          f"llm={settings.max_llm_calls}, wall={settings.max_wall_clock_s}s, "
-          f"fetch={settings.fetch_timeout_s}s")
+    print(
+        f"Budgets           : steps={settings.max_planned_steps}/{settings.max_total_steps}, "
+        f"react={settings.max_react_iterations}, tools={settings.max_tool_calls}, "
+        f"llm={settings.max_llm_calls}, wall={settings.max_wall_clock_s}s, "
+        f"fetch={settings.fetch_timeout_s}s"
+    )
     return bool(settings.llm_api_key and settings.scout_model)
 
 
@@ -69,8 +71,10 @@ def check_llm(settings: Settings) -> bool:
     last = llm.usage.calls[-1]
     print(f"Served by: {last.provider or 'single provider'} / {last.model}")
     print("Validated JSON:", snapshot.model_dump_json(indent=2))
-    print(f"LLM calls: {llm.usage.llm_calls} | tokens: {llm.usage.prompt_tokens} prompt + "
-          f"{llm.usage.completion_tokens} completion | {time.monotonic() - started:.1f}s")
+    print(
+        f"LLM calls: {llm.usage.llm_calls} | tokens: {llm.usage.prompt_tokens} prompt + "
+        f"{llm.usage.completion_tokens} completion | {time.monotonic() - started:.1f}s"
+    )
     return True
 
 

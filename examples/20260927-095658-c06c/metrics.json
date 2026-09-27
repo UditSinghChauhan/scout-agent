@@ -1,0 +1,41 @@
+{
+  "run_id": "20260927-095658-c06c",
+  "tool_calls": 13,
+  "llm_calls": 33,
+  "prompt_tokens": 36522,
+  "completion_tokens": 8207,
+  "latency_s": 155.3,
+  "citation_coverage": 100.0,
+  "unsupported_claims": 2,
+  "flagged_numeric_claims": 2,
+  "revised_claims": 2,
+  "facts_reused": 0,
+  "memory_steps": 0,
+  "cache_hits": 0,
+  "lessons_injected": 0,
+  "budget_exhausted": false,
+  "provider_switches": 7,
+  "tokens_by_model": {
+    "groq/qwen/qwen3.8-27b": 19775,
+    "groq/openai/gpt-oss-120b": 5066,
+    "groq/openai/gpt-oss-20b": 19888
+  },
+  "calls_by_model": {
+    "groq/qwen/qwen3.8-27b": 13,
+    "groq/openai/gpt-oss-120b": 5,
+    "groq/openai/gpt-oss-20b": 15
+  },
+  "critique_verdicts": {
+    "complete": 3,
+    "unknown": 2,
+    "retry": 1
+  },
+  "retries": 1,
+  "replans": 0,
+  "total_tokens": 44729,
+  "claims": 12,
+  "cited_claims": 12,
+  "evidence_items": 15,
+  "budget_reason": null,
+  "injected_lessons": []
+}

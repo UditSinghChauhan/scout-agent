@@ -142,6 +142,7 @@ class RouterBackend:
                 short = exc.retry_after is None or exc.retry_after <= self.max_wait_s
                 if short and st.recent_429 == 0:
                     st.recent_429 = 1
+                    exc.model = cand.label
                     raise  # first short wait: LLM.complete backs off and retries this candidate
                 wait = max(exc.retry_after or 0.0, self.max_wait_s if short else 0.0)
                 st.cooldown_until, st.reason = self.clock() + wait, "rate limited"
@@ -182,5 +183,7 @@ class RouterBackend:
         ]
         soonest = min(waits, default=math.inf)
         if soonest <= self.max_wait_s:
-            return TransientLLMError(f"all candidates cooling down ({reason})", max(soonest, 0.0))
+            return TransientLLMError(
+                f"all candidates cooling down ({reason})", max(soonest, 0.0), "all candidates"
+            )
         return LLMError(f"No LLM candidate available ({reason or 'none configured'})")

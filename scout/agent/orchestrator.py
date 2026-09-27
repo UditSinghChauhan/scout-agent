@@ -14,7 +14,7 @@ from __future__ import annotations
 import logging
 import uuid
 from collections import Counter
-from collections.abc import Generator, Iterator
+from collections.abc import Callable, Generator, Iterator
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, TypeVar
@@ -32,7 +32,7 @@ from scout.agent.verifier import (
     move_to_unknowns,
     revise_claims,
 )
-from scout.config import Settings
+from scout.config import Settings, git_commit
 from scout.events import Event, EventType
 from scout.llm import LLM, DeadlineExceededError
 from scout.memory.store import MemoryStore, domain_of, normalize_entity, now_utc
@@ -100,6 +100,7 @@ class Orchestrator:
         registry: ToolRegistry | None = None,
         run_id: str | None = None,
         store: MemoryStore | None = None,
+        listener: Callable[[str, dict[str, object]], None] | None = None,
     ) -> None:
         self.settings = settings
         self.llm = llm or LLM(settings=settings)
@@ -107,6 +108,8 @@ class Orchestrator:
         self.registry = registry or build_registry(settings, store=self.store)
         self.run_id = run_id or new_run_id()
         self.started_at = now_utc()
+        if listener is not None:
+            self.llm.listener = listener  # e.g. the UI shows rate-limit waits as they start
         self.clock = self.llm._clock
         self.budget = Budget(settings, self.llm, clock=self.clock)
         self._started = self.clock()
@@ -602,6 +605,7 @@ class Orchestrator:
             "evidence_items": len(state.ledger.items),
             "budget_reason": self.budget.exhausted_reason,
             "injected_lessons": [lesson.id for lesson in state.memory.lessons],
+            "git_commit": git_commit(),
         }
         if state.task is not None:
             try:

@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from scout.events import Event
+from scout.scoring import normalize_score
 
 STAGES = ("intake", "recall", "plan", "execute", "synthesize", "verify", "reflect")
 _STAGE_ALIASES = {"critique": "execute"}  # critique alternates with execution per step
@@ -22,7 +23,7 @@ STEP_STATUSES = ("pending", "running", "done", "from memory", "retried", "unknow
 class TraceEntry:
     """One line in a step's trace."""
 
-    kind: str  # thought | tool | result | critique | retry | switch | error | memory
+    kind: str  # thought | tool | result | critique | retry | switch | error | memory | wait
     text: str
     ok: bool | None = None
 
@@ -80,8 +81,10 @@ class RunView:
 
     @property
     def score(self) -> str | None:
-        """The brief's score (fit score, threat level or readiness), if any."""
-        return (self.brief or {}).get("score")
+        """The brief's score in the fixed per-playbook format (None if not valid)."""
+        brief = self.brief or {}
+        purpose = self.purpose or str(brief.get("purpose_type", ""))
+        return normalize_score(purpose, brief.get("score"), brief.get("score_reasons") or [])
 
 
 def _lesson(item: Any) -> dict[str, Any]:
@@ -243,6 +246,17 @@ def _on_switch(view: RunView, p: dict[str, Any], event: Event) -> None:
     target.append(TraceEntry("switch", text))
 
 
+def wait_line(p: dict[str, Any]) -> str:
+    """Status line for a rate-limit wait, e.g. "Waiting 12 s: rate limit on qwen3.8-27b"."""
+    model = str(p.get("model") or "the model").split("/")[-1]
+    return f"Waiting {float(p.get('wait_s', 0) or 0):.0f} s: rate limit on {model}"
+
+
+def _on_rate_limited(view: RunView, p: dict[str, Any], event: Event) -> None:
+    target = _entry_target(view, p) if event.stage == "execute" else view.run_entries
+    target.append(TraceEntry("wait", wait_line(p)))
+
+
 def _on_error(view: RunView, p: dict[str, Any], event: Event) -> None:
     message = str(p.get("message", "error"))
     view.errors.append(message)
@@ -296,6 +310,7 @@ _HANDLERS = {
     "retry": _on_retry,
     "replan": _on_replan,
     "provider_switched": _on_switch,
+    "rate_limited": _on_rate_limited,
     "error": _on_error,
     "verification": _on_verification,
     "lesson_learned": _on_lesson_learned,

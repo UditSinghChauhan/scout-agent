@@ -50,9 +50,12 @@ class LLMError(Exception):
 class TransientLLMError(LLMError):
     """A retryable failure: HTTP 429, HTTP 5xx, or a connection problem."""
 
-    def __init__(self, message: str, retry_after: float | None = None) -> None:
+    def __init__(
+        self, message: str, retry_after: float | None = None, model: str | None = None
+    ) -> None:
         super().__init__(message)
         self.retry_after = retry_after
+        self.model = model  # "provider/model" when known (set by the router)
 
 
 class QuotaExhaustedError(LLMError):
@@ -363,6 +366,8 @@ class LLM:
         self.deadline: float | None = None
         self.usage = UsageTracker()
         self.notices: list[tuple[str, dict[str, object]]] = []
+        # Called synchronously before a backoff wait, so a UI can show it while it waits.
+        self.listener: Callable[[str, dict[str, object]], None] | None = None
 
     @property
     def backend(self) -> ChatBackend:
@@ -417,6 +422,7 @@ class LLM:
                 delay = self._backoff(attempt, exc.retry_after)
                 self._check_deadline(delay)
                 logger.warning("Transient LLM error (%s); retrying in %.1fs", exc, delay)
+                self._announce_wait(exc.model or name or tier, tier, delay)
                 self._sleep(delay)
                 continue
             self._record(result, name, tier, self._clock() - started)
@@ -448,6 +454,16 @@ class LLM:
                 },
             )
         )
+
+    def _announce_wait(self, model: str, tier: str, delay: float) -> None:
+        """Record a ``rate_limited`` notice and tell the listener right away."""
+        payload: dict[str, object] = {"model": model, "tier": tier, "wait_s": round(delay, 1)}
+        self.notices.append(("rate_limited", payload))
+        if self.listener is not None:
+            try:
+                self.listener("rate_limited", payload)
+            except Exception:  # noqa: BLE001 - a UI callback must never break a run
+                logger.exception("rate_limited listener failed")
 
     def _check_deadline(self, delay: float) -> None:
         """Refuse a backoff wait that would overshoot the wall-clock deadline."""
