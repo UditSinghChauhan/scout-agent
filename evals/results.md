@@ -1,7 +1,7 @@
 # Scout eval results
 
 Generated 2026-09-27 18:50 IST by `python -m scout eval --from-runs` from 13 recorded runs.
-These are real development runs (Phase 2 onwards: only runs whose trace contains the verifier stage are included), not a curated benchmark. Budgets and code changed between runs; each row's trace is in `runs/` or `examples/`.
+These are real development runs (only runs whose trace contains the verifier stage are included), not a curated benchmark. Budgets and code changed between runs; each row's trace is in `runs/` or `examples/`.
 
 ## Summary by purpose
 

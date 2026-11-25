@@ -4,11 +4,11 @@
 
 We build Scout, a purpose-aware company intelligence agent. You give it a company and a purpose. It plans research around that purpose, gathers cited evidence, checks its own work, and gets measurably faster and sharper with every run.
 
-Challenge context. Techvruk contest hosted by Tryneu Global Solution, 15 internship slots, deadline Sunday 27 Sep 2026 at 11:30 PM. Judged on LLM reasoning and prompting, agentic design patterns, workflow orchestration, and practical tool integration. The brief itself says agents should "get better with use" and "research dynamically based on the task or purpose". Its example list leans hard on lead enrichment, lead scoring and competitive intelligence aimed at colleges, hiring managers and engineering firms, which tells us what the host's business cares about.
+Context. Built for an AI agentic systems challenge (September 2026) evaluated on LLM reasoning and prompting, agentic design patterns, workflow orchestration and practical tool integration. The brief asked for agents that "get better with use" and "research dynamically based on the task or purpose", with examples in lead enrichment, lead scoring and competitive intelligence.
 
-Why Scout wins, criterion by criterion
+How the design maps to the evaluation criteria
 
-| Judging criterion | How Scout proves it |
+| Criterion | How Scout proves it |
 | --- | --- |
 | LLM reasoning and prompting | Separate role prompts (planner, executor, critic, synthesizer, reflector), structured JSON outputs validated by Pydantic, automatic repair on malformed output |
 | Agentic design patterns | Plan-and-Execute outer loop, ReAct inner loop per step, critic-driven replanning, Reflexion-style lessons, tool use |
@@ -197,7 +197,7 @@ Extraction
 httpx + trafilatura Clean article text from pages
 
 Storage
-sqlite3 from the standard library Zero setup for judges
+sqlite3 from the standard library Zero setup after cloning
 
 CLI
 Typer + Rich Readable live trace in the terminal

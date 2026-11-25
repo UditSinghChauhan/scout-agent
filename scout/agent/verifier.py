@@ -1,4 +1,4 @@
-"""Verifier stage (docs/SPEC.md §4, Phase 2 B2).
+"""Verifier stage (docs/SPEC.md §4).
 
 Deterministic checks on every claim of the Brief:
 

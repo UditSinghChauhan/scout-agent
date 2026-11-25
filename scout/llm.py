@@ -348,7 +348,7 @@ class LLM:
     """Scout's LLM client: plain completions, validated JSON, backoff and token accounting.
 
     ``deadline`` (a ``clock()`` value) bounds backoff waits: a wait that would overshoot it raises
-    :class:`DeadlineExceededError` instead of sleeping (Phase 2, A4). ``notices`` collects one
+    :class:`DeadlineExceededError` instead of sleeping. ``notices`` collects one
     entry per call and per provider switch; the orchestrator turns them into trace events.
     """
 

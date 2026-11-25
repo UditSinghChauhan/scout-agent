@@ -66,7 +66,7 @@ class Settings:
     max_llm_calls: int = 60
     max_wall_clock_s: float = 480.0
 
-    # Context (docs/SPEC.md §4 context management; Phase 2 token diet).
+    # Context (docs/SPEC.md §4 context management; token diet).
     scratchpad_full_observations: int = 2
 
     # Safety: personal profile pages are never fetched or cited (roles only, SPEC §3 non-goals).

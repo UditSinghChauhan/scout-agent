@@ -82,7 +82,7 @@ class ToolRegistry:
     """Named tools the executor may call.
 
     Within one run (one registry instance), repeating an identical call returns the earlier
-    observation with a note instead of running the tool again (Phase 2, A3).
+    observation with a note instead of running the tool again.
     """
 
     def __init__(self, tools: list[Tool], stats: dict[str, int] | None = None) -> None:

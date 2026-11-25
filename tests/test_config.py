@@ -8,7 +8,7 @@ from scout.config import Settings, env_name, load_settings, read_env_file
 
 
 def test_budget_defaults() -> None:
-    # SPEC §4 budgets, with the Phase 2 token-diet overrides (5 steps, 3 iterations, 480 s).
+    # SPEC §4 budgets, with the token-diet overrides (5 steps, 3 iterations, 480 s).
     s = load_settings(env={}, env_file=None)
     assert s.max_planned_steps == 5
     assert s.max_total_steps == 8

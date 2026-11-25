@@ -1,4 +1,4 @@
-"""Phase 0 manual smoke test: real LLM, real search, real fetch.
+"""Manual smoke test: real LLM, real search, real fetch.
 
 Run from the repo root:  python scripts/smoke.py
 Needs .env (see .env.example). Never prints API keys. Exits non-zero if any stage fails.

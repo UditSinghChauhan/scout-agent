@@ -1,7 +1,7 @@
 """Eval harness: score recorded runs (no LLM calls) or run a small task set live.
 
 ``python -m scout eval --from-runs`` reads ``runs/`` and ``examples/``, keeps runs whose trace shows
-the verifier (Phase 2 or later), and writes ``evals/results.md``.
+the verifier stage, and writes ``evals/results.md``.
 ``python -m scout eval --live evals/tasks.yaml`` runs each task through the orchestrator first
 (real LLM and search calls), then scores those runs the same way.
 """
@@ -122,8 +122,8 @@ def render(rows: list[dict[str, Any]], generated: datetime | None = None) -> str
         "# Scout eval results",
         "",
         f"Generated {stamp} by `python -m scout eval --from-runs` from {len(rows)} recorded runs.",
-        "These are real development runs (Phase 2 onwards: only runs whose trace contains the "
-        "verifier stage are included), not a curated benchmark. Budgets and code changed between "
+        "These are real development runs (only runs whose trace contains the verifier stage are "
+        "included), not a curated benchmark. Budgets and code changed between "
         "runs; each row's trace is in `runs/` or `examples/`.",
         "",
         "## Summary by purpose",
