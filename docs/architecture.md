@@ -93,4 +93,4 @@ Flagged claims get **one** LLM revision pass (rewrite using only the cited evide
 | SQLite | Zero setup, transactional, inspectable | Single-user; no fuzzy (vector) recall |
 | Deterministic checks behind the LLM | Citations, numbers, personal data and memory reuse do not depend on model quality | Exact-match numeric check can be strict |
 | Free-tier router | Works without paid keys | Rate limits slow runs; quality varies by model |
-| Replay-first UI | Demos and judging spend no quota and are reproducible | A replay must always be labelled as such (the UI does) |
+| Replay-first UI | Reviewing a run spends no quota and is reproducible | A replay must always be labelled as such (the UI does) |

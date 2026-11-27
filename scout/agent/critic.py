@@ -1,4 +1,4 @@
-"""Critic stage: StepResult + done criteria -> Critique (docs/SPEC.md §4, Phase 2 B1)."""
+"""Critic stage: StepResult + done criteria -> Critique (docs/SPEC.md §4)."""
 
 from __future__ import annotations
 

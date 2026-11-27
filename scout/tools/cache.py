@@ -1,4 +1,4 @@
-"""Small JSON disk cache with a time-to-live (Phase 2, A3).
+"""Small JSON disk cache with a time-to-live.
 
 Search results are keyed by query, page text by URL. Stored under ``data/cache`` (gitignored).
 Failures to read or write the cache are logged and ignored: it is an optimisation only.

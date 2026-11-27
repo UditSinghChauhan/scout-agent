@@ -1,6 +1,6 @@
 """Insights built from recorded traces alone (no memory database needed).
 
-A judge who clones the repo has an empty database but the committed ``examples/``; everything
+A fresh clone has an empty database but the committed ``examples/``; everything
 the Insights tab shows can be rebuilt from those traces: the runs table (metrics), lessons
 (``lesson_learned`` / ``lesson_voted`` events and injections in ``plan_created``), source scores
 (the critic's per-source ratings, same Laplace formula as the store) and each run's plan.

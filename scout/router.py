@@ -1,4 +1,4 @@
-"""Multi-provider LLM router (Phase 2, A1).
+"""Multi-provider LLM router.
 
 ``RouterBackend`` holds an ordered candidate list per tier (``scout.config.ROUTES``) and tries
 them in order:

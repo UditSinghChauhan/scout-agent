@@ -2,7 +2,7 @@
 
 ``web_search(query, max_results=5)`` returns ``[{"title", "url", "snippet"}]``. Providers are
 plain callables ``(query, max_results) -> results`` so tests inject ``FakeSearch`` and never touch
-the network. Source-score re-ranking is added in Phase 3.
+the network. Results are gently re-ranked by source reliability scores.
 """
 
 from __future__ import annotations
