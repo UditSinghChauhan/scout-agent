@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -103,6 +104,133 @@ def test_identical_fact_refreshes_instead_of_duplicating(tmp_path: Path) -> None
     store.add_facts("zoho", [evidence("E1", "same", FACT_URL)], "r1", now=NOW)
     added = store.add_facts("zoho", [evidence("E9", "same", FACT_URL)], "r2", now=NOW)
     assert added == 0 and len(store.facts("zoho")) == 1
+
+
+# --- provenance of stored facts ----------------------------------------------------------------
+
+# The facts table as it was before stored facts recorded the provenance check (user_version 0).
+_V0_FACTS = """
+CREATE TABLE facts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, entity TEXT, topic TEXT, claim TEXT, source_url TEXT,
+    captured_at TEXT, confidence REAL, run_id TEXT, volatility TEXT DEFAULT 'stable',
+    snippet TEXT DEFAULT ''
+);
+"""
+LEGACY_CLAIM = "Zoho was founded in 1996 in Chennai."
+
+
+def legacy_db(path: Path) -> Path:
+    """A pre-migration database holding one fresh fact saved before the provenance check."""
+    conn = sqlite3.connect(path)
+    conn.executescript(_V0_FACTS)
+    captured = datetime.now(UTC).isoformat()
+    conn.execute(
+        "INSERT INTO facts (entity, topic, claim, source_url, captured_at, confidence, run_id,"
+        " volatility, snippet) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        ("zoho", "overview", LEGACY_CLAIM, FACT_URL, captured, 0.9, "old", "stable", "x"),
+    )
+    conn.commit()
+    conn.close()
+    return path
+
+
+def schema_state(store: MemoryStore) -> tuple[int, list[str]]:
+    """(user_version, facts column names)."""
+    version = store.conn.execute("PRAGMA user_version").fetchone()[0]
+    columns = [r["name"] for r in store.conn.execute("PRAGMA table_info(facts)")]
+    return version, columns
+
+
+def recall_tool_text(tmp_path: Path, store: MemoryStore) -> str:
+    reg = build_registry(
+        settings_for(tmp_path), [FakeSearch().provider()], lambda u: "t", cache=None, store=store
+    )
+    return reg.run("recall_memory", {"entity": "Zoho", "topic": ""}).observation.content
+
+
+def test_old_schema_db_loads_and_its_facts_are_ignored(tmp_path: Path) -> None:
+    store = MemoryStore(legacy_db(tmp_path / "scout.db"))
+    fresh, stale = store.recall("zoho", 7, 2, 15, 6000)
+    assert fresh == [] and stale == []
+    assert store.facts("zoho") == []
+    assert "No fresh facts" in recall_tool_text(tmp_path, store)
+    assert [f.claim for f in store.facts("zoho", include_unchecked=True)] == [LEGACY_CLAIM]
+    version, columns = schema_state(store)
+    assert version == 1 and "provenance_checked" in columns
+
+
+def test_migration_is_a_noop_on_second_open(tmp_path: Path) -> None:
+    path = legacy_db(tmp_path / "scout.db")
+    first = MemoryStore(path)
+    before = schema_state(first)
+    first.close()
+    second = MemoryStore(path)
+    assert before[0] == 1 and before[1].count("provenance_checked") == 1
+    assert schema_state(second) == before
+    assert len(second.facts("zoho", include_unchecked=True)) == 1
+
+
+class _RacedConnection:
+    """sqlite3 connection proxy that calls ``race()`` once, just before its first BEGIN."""
+
+    def __init__(self, conn: sqlite3.Connection, race: Any) -> None:
+        object.__setattr__(self, "_conn", conn)
+        object.__setattr__(self, "_race", race)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._conn, name)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        setattr(self._conn, name, value)  # e.g. row_factory
+
+    def execute(self, sql: str, *args: Any) -> sqlite3.Cursor:
+        race = self._race
+        if sql.startswith("BEGIN") and race is not None:
+            object.__setattr__(self, "_race", None)
+            race()
+        return self._conn.execute(sql, *args)
+
+
+def test_two_stores_migrating_the_same_old_db_both_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Both stores see user_version 0; the second one migrates just before the first one's BEGIN."""
+    path = legacy_db(tmp_path / "scout.db")
+    real_connect = sqlite3.connect
+    others: list[MemoryStore] = []
+    raced = False
+
+    def connect(*args: Any, **kwargs: Any) -> Any:
+        nonlocal raced
+        conn = real_connect(*args, **kwargs)
+        if raced:
+            return conn
+        raced = True
+        return _RacedConnection(conn, lambda: others.append(MemoryStore(path)))
+
+    monkeypatch.setattr(sqlite3, "connect", connect)
+    first = MemoryStore(path)
+    [second] = others
+    for store in (first, second):
+        version, columns = schema_state(store)
+        assert version == 1 and columns.count("provenance_checked") == 1
+
+
+def test_new_fact_is_recalled(tmp_path: Path) -> None:
+    store = MemoryStore(legacy_db(tmp_path / "scout.db"))
+    store.add_facts("zoho", [evidence("E1", "Zoho is headquartered in Chennai.", FACT_URL)], "r")
+    fresh, _ = store.recall("zoho", 7, 2, 15, 6000)
+    assert [f.claim for f in fresh] == ["Zoho is headquartered in Chennai."]
+    text = recall_tool_text(tmp_path, store)
+    assert "headquartered" in text and LEGACY_CLAIM not in text
+
+
+def test_resaving_a_legacy_fact_marks_it_checked_with_the_new_snippet(tmp_path: Path) -> None:
+    store = MemoryStore(legacy_db(tmp_path / "scout.db"))
+    checked = evidence("E1", LEGACY_CLAIM, FACT_URL, snippet="founded in 1996 in Chennai")
+    assert store.add_facts("zoho", [checked], "r2") == 0  # refreshed, not duplicated
+    [fact] = store.facts("zoho")
+    assert fact.snippet == "founded in 1996 in Chennai" and fact.run_id == "r2"
 
 
 # --- memory steps ----------------------------------------------------------------------------
