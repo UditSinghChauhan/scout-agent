@@ -260,7 +260,7 @@ FINISH = {
         {
             "claim": "Zoho uses Java.",
             "source_url": "https://example.com/zoho-stack/1",
-            "snippet": "Zoho uses Java",
+            "snippet": "Zoho uses Java for most backend services",
             "volatility": "stable",
         }
     ],

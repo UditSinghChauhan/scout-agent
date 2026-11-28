@@ -67,12 +67,22 @@ def fetch_action() -> dict:
     return {"thought": "read", "type": "tool", "tool": "fetch_page", "args": {"url": PAGE_URL}}
 
 
+def snippet_for(url: str) -> str:
+    """A passage (at least snippet_min_chars long) that is in the fake source text for ``url``."""
+    return "Zoho hires 800 freshers a year" if url == PAGE_URL else "Deterministic snippet"
+
+
 def finish_action(*urls: str) -> dict:
     return {
         "thought": "done",
         "type": "finish",
         "findings": [
-            {"claim": f"Zoho fact from {u}", "source_url": u, "snippet": "s", "confidence": 0.8}
+            {
+                "claim": f"Zoho fact from {u}",
+                "source_url": u,
+                "snippet": snippet_for(u),
+                "confidence": 0.8,
+            }
             for u in urls
         ],
     }

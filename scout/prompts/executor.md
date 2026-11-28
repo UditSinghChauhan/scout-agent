@@ -17,7 +17,8 @@ Finish: {"thought": "...", "type": "finish", "findings": [{"claim": "...", "sour
 - 2–5 findings, each specific and self-contained (name the company; include numbers and dates).
 - `source_url` must appear in your observations. Never invent URLs.
 - `snippet`: a passage copied verbatim from that same source, including every number used in
-  the claim. Findings whose snippet is not in the cited source are discarded.
+  the claim. Quote the full sentence that contains the fact (at least $snippet_min_chars
+  characters). Findings whose snippet is not in the cited source, or is shorter, are discarded.
 - Separate facts about the company itself from facts about products it sells.
 - `volatility`: "news" for time-sensitive facts (announcements, launches, funding, events,
   current openings), else "stable" (founding, HQ, products, stack, process).

@@ -109,16 +109,19 @@ def test_fuzzy_match_keeps_only_the_matched_block() -> None:
 
 def test_accept_findings_checks_only_the_cited_urls_sources(tmp_path: Path) -> None:
     settings = settings_for(tmp_path)
-    sources = {"https://a.com": ["Alpha has 100 staff."], "https://b.com": ["Beta is new."]}
+    sources = {
+        "https://a.com": ["Alpha has 100 staff in Pune."],
+        "https://b.com": ["Beta is new."],
+    }
     findings = [
-        Finding(claim="a", source_url="https://a.com", snippet="alpha has 100 staff"),
-        Finding(claim="b", source_url="https://b.com", snippet="Alpha has 100 staff."),
+        Finding(claim="a", source_url="https://a.com", snippet="alpha has 100 staff in pune"),
+        Finding(claim="b", source_url="https://b.com", snippet="Alpha has 100 staff in Pune."),
         Finding(claim="c", source_url="https://c.com", snippet="anything"),
         Finding(claim="d", source_url="https://b.com", snippet=" "),
         Finding(claim="e", source_url=PROFILE_URL, snippet="CTO"),
     ]
     accepted, rejected = _accept_findings(findings, sources, settings)
-    assert [(f.claim, f.snippet) for f in accepted] == [("a", "Alpha has 100 staff")]
+    assert [(f.claim, f.snippet) for f in accepted] == [("a", "Alpha has 100 staff in Pune")]
     assert [(r.url, r.reason) for r in rejected] == [
         ("https://b.com", "snippet_not_in_source"),  # copied from a.com
         ("https://c.com", "unseen_url"),
@@ -132,8 +135,75 @@ def test_accept_findings_checks_only_the_cited_urls_sources(tmp_path: Path) -> N
     }
 
 
-def _execute(settings: Settings, script: list) -> tuple[list[Event], StepResult, EvidenceLedger]:
-    llm = FakeLLM(script).llm(settings)
+@pytest.mark.parametrize(
+    ("snippet", "reason"),
+    [
+        ("  800   freshers\na year ", "snippet_too_short"),  # 19 characters once normalised
+        ("hires 800 freshers a", None),  # exactly the 20-character minimum
+    ],
+)
+def test_snippet_minimum_counts_normalised_characters(
+    tmp_path: Path, snippet: str, reason: str | None
+) -> None:
+    finding = Finding(claim="c", source_url=PAGE_URL, snippet=snippet)
+    accepted, rejected = _accept_findings([finding], {PAGE_URL: [SOURCE]}, settings_for(tmp_path))
+    assert [r.reason for r in rejected] == ([reason] if reason else [])
+    assert len(accepted) == (0 if reason else 1)
+
+
+def test_short_source_accepts_a_short_snippet_and_stores_the_whole_source(tmp_path: Path) -> None:
+    url = "https://zoho.example/about"
+    short_source = "Est. 1996, Chennai."  # 19 characters: below the minimum itself
+    long_source = "Zoho, est. 1996, has offices worldwide and hires 800 freshers a year."
+    findings = [
+        Finding(claim="founded", source_url=url, snippet="est. 1996"),
+        Finding(claim="invented", source_url=url, snippet="est. 2001"),
+    ]
+    sources = {url: [long_source, short_source]}  # the long text is never used for short snippets
+    accepted, rejected = _accept_findings(findings, sources, settings_for(tmp_path))
+    assert [(f.claim, f.snippet) for f in accepted] == [("founded", short_source)]
+    assert [(r.url, r.reason) for r in rejected] == [(url, "snippet_not_in_source")]
+
+
+def test_long_snippet_for_a_url_without_source_text_is_not_in_source(tmp_path: Path) -> None:
+    snippet = "Zoho Corporation hires 800 freshers a year through drives"
+    assert len(snippet) == 57
+    finding = Finding(claim="c", source_url=PAGE_URL, snippet=snippet)
+    _, rejected = _accept_findings([finding], {PAGE_URL: []}, settings_for(tmp_path))
+    assert [r.reason for r in rejected] == ["snippet_not_in_source"]
+
+
+def test_too_short_snippets_count_as_rejected_and_the_prompt_states_the_minimum(
+    tmp_path: Path,
+) -> None:
+    url = "https://example.com/zoho-careers/1"
+    fake = FakeLLM(
+        [
+            {"thought": "r", "type": "tool", "tool": "fetch_page", "args": {"url": url}},
+            {
+                "thought": "f",
+                "type": "finish",
+                "findings": [
+                    {"claim": "hires", "source_url": url, "snippet": "hires 800 freshers a year"},
+                    {"claim": "short", "source_url": url, "snippet": "800 freshers"},
+                ],
+            },
+        ]
+    )
+    events, result, ledger = _execute(settings_for(tmp_path, snippet_min_chars=21), fake)
+    assert [e.snippet for e in ledger.items] == ["hires 800 freshers a year"]
+    assert result.snippets_rejected == 1
+    rejected = [e.payload for e in events if e.type == "evidence_rejected"]
+    assert rejected == [{"step_id": 1, "reason": "snippet_too_short", "url": url}]
+    system = fake.requests[0].messages[0]["content"]
+    assert "at least 21" in system and "$snippet_min_chars" not in system
+
+
+def _execute(
+    settings: Settings, script: list | FakeLLM
+) -> tuple[list[Event], StepResult, EvidenceLedger]:
+    fake = script if isinstance(script, FakeLLM) else FakeLLM(script)
+    llm = fake.llm(settings)
     ledger = EvidenceLedger()
     gen = execute_step(
         Step(id=1, question="Q?"),
