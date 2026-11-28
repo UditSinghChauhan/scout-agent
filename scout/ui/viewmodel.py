@@ -32,7 +32,7 @@ STEP_STATUSES = (
 class TraceEntry:
     """One line in a step's trace."""
 
-    kind: str  # thought | tool | result | critique | retry | switch | error | memory | wait
+    kind: str  # thought|tool|result|rejected|critique|retry|switch|error|memory|wait
     text: str
     ok: bool | None = None
 
@@ -251,6 +251,13 @@ def _on_tool_result(view: RunView, p: dict[str, Any], event: Event) -> None:
     _entry_target(view, p).append(TraceEntry("result", text, bool(p.get("ok", True))))
 
 
+def _on_evidence_rejected(view: RunView, p: dict[str, Any], event: Event) -> None:
+    where = p.get("url") or p.get("domain") or "?"
+    reason = str(p.get("reason", "rejected")).replace("_", " ")
+    text = f"Evidence rejected ({reason}): {where}"
+    _entry_target(view, p).append(TraceEntry("rejected", text, False))
+
+
 def _on_critique(view: RunView, p: dict[str, Any], event: Event) -> None:
     step = view.step(p.get("step_id"))
     verdict = str(p.get("verdict", ""))
@@ -368,6 +375,7 @@ _HANDLERS = {
     "thought": _on_thought,
     "tool_call": _on_tool_call,
     "tool_result": _on_tool_result,
+    "evidence_rejected": _on_evidence_rejected,
     "critique": _on_critique,
     "retry": _on_retry,
     "replan": _on_replan,

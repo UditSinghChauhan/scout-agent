@@ -35,6 +35,7 @@ EventType = Literal[
     "llm_call",
     "rate_limited",
     "lesson_voted",
+    "evidence_rejected",
 ]
 
 

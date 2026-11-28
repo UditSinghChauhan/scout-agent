@@ -45,10 +45,17 @@ def settings_for(tmp_path: Path, **overrides: object) -> Settings:
     return base.with_overrides(**overrides)
 
 
+def zoho_search() -> FakeSearch:
+    """FakeSearch whose top "zoho" result really contains the text ``finish()`` quotes from it."""
+    results = FakeSearch()("zoho", 5)
+    results[0] = {**results[0], "snippet": "Zoho hires 800 freshers a year through campus drives."}
+    return FakeSearch(results_by_query={"zoho": results})
+
+
 def registry(settings: Settings, search: FakeSearch | None = None) -> Any:
     return build_registry(
         settings,
-        [(search or FakeSearch()).provider("fake")],
+        [(search or zoho_search()).provider("fake")],
         lambda url: "Page text 800.",
         cache=None,
     )

@@ -176,11 +176,18 @@ def brief() -> dict:
     }
 
 
+def stack_search() -> FakeSearch:
+    """FakeSearch whose top "zoho stack" result really contains the text FINISH quotes."""
+    results = FakeSearch()("zoho stack", 5)
+    results[0] = {**results[0], "snippet": "Zoho uses Java for most backend services."}
+    return FakeSearch(results_by_query={"zoho stack": results})
+
+
 def run_with(tmp_path: Path, store: MemoryStore, script: list, **overrides: object) -> tuple:
     settings = settings_for(tmp_path, **overrides)
     fake = FakeLLM(script)
     reg = build_registry(
-        settings, [FakeSearch().provider()], lambda u: "text", cache=None, store=store
+        settings, [stack_search().provider()], lambda u: "text", cache=None, store=store
     )
     orch = Orchestrator(settings, llm=fake.llm(settings), registry=reg, store=store)
     recorder = RunRecorder(settings.runs_dir, orch.run_id)

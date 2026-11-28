@@ -155,6 +155,46 @@ def test_orchestrator_happy_path(tmp_path: Path) -> None:
     assert len(trace) == len(events)
 
 
+def test_hallucinated_number_in_snippet_never_reaches_brief(tmp_path: Path) -> None:
+    """The page says 800; the model's snippet says 900. The 900 must not survive verification."""
+    settings = settings_for(tmp_path)
+    invented = "Zoho hires 900 freshers a year through campus drives."
+    claim = "Zoho hires 900 freshers a year."
+    fake = FakeLLM(
+        [
+            intake_reply(),
+            plan_reply(1),
+            search_action(),
+            fetch_action(),
+            {
+                "thought": "done",
+                "type": "finish",
+                "findings": [{"claim": claim, "source_url": PAGE_URL, "snippet": invented}],
+            },
+            COMPLETE,
+            {
+                "title": "Zoho",
+                "sections": [
+                    {"title": "Snapshot", "claims": [{"text": claim, "evidence_ids": ["E1"]}]}
+                ],
+            },
+            {"revisions": []},
+            {"lessons": []},
+        ]
+    )
+    orch = Orchestrator(settings, llm=fake.llm(settings), registry=registry(settings))
+    events = run_all(orch)
+    final = events[-1].payload
+
+    section_texts = [c["text"] for s in final["brief"]["sections"] for c in s["claims"]]
+    assert not any("900" in t for t in section_texts)
+    assert any("900" in u for u in final["brief"]["unknowns"])
+    rejected = [e.payload for e in events if e.type == "evidence_rejected"]
+    assert rejected == [{"step_id": 1, "reason": "snippet_not_in_source", "url": PAGE_URL}]
+    assert final["metrics"]["snippets_rejected"] == 1
+    assert final["evidence"] == []
+
+
 def test_budget_exhaustion_ends_with_partial_brief(tmp_path: Path) -> None:
     settings = settings_for(tmp_path, max_tool_calls=1)
     fake = FakeLLM(

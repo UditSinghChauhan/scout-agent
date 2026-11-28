@@ -607,6 +607,7 @@ class Orchestrator:
             citation_coverage=round(100.0 * cited / total, 1) if total else 0.0,
             unsupported_claims=state.unsupported,
             flagged_numeric_claims=len(state.flagged_numeric),
+            snippets_rejected=sum(r.snippets_rejected for r in state.results),
             revised_claims=state.revised,
             budget_exhausted=self.budget.exhausted_reason is not None,
             provider_switches=self._switches,

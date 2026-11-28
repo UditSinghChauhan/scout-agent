@@ -84,6 +84,9 @@ def render_event(event: Event) -> None:
     elif event.type == "tool_result":
         style = "green" if p.get("ok") else "red"
         console.print(f"  [{style}]result[/] {p.get('summary', '')}")
+    elif event.type == "evidence_rejected":
+        where = p.get("url") or p.get("domain")
+        console.print(f"  [red]rejected[/] {p.get('reason')}: {where}")
     elif event.type == "critique":
         verdict = f"step {p.get('step_id')}: {p.get('verdict')} — {p.get('reason')}"
         console.print(f"  [bold cyan]critic[/] {verdict}")

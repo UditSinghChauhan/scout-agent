@@ -69,6 +69,10 @@ class Settings:
     # Context (docs/SPEC.md §4 context management; token diet).
     scratchpad_full_observations: int = 2
 
+    # Evidence provenance: a finding's snippet must be found in the source text the model saw,
+    # exactly or as one contiguous block covering at least this share of the snippet.
+    snippet_match_ratio: float = 0.85
+
     # Safety: personal profile pages are never fetched or cited (roles only, SPEC §3 non-goals).
     personal_profile_patterns: tuple[str, ...] = (
         "linkedin.com/in/",
