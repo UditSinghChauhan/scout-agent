@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import openai
 import pytest
 from pydantic import BaseModel
 
+from scout.agent.orchestrator import Orchestrator
 from scout.config import Settings
 from scout.llm import (
     LLM,
@@ -13,7 +16,8 @@ from scout.llm import (
     extract_json_text,
     is_transient,
 )
-from tests.fakes import FakeLLM
+from scout.tools.registry import build_registry
+from tests.fakes import FakeLLM, FakeSearch
 
 
 class Company(BaseModel):
@@ -187,3 +191,14 @@ def test_rejected_native_tool_call_is_returned_as_text() -> None:
     other = _sdk_error(openai.BadRequestError, status_code=400)
     other.body = {"error": {"code": "invalid_request_error"}}
     assert rejected_generation(other) is None
+
+
+def test_clock_is_public_and_used_by_orchestrator(tmp_path: Path) -> None:
+    def clock() -> float:
+        return 42.0
+
+    settings = Settings(scout_model="m", runs_dir=tmp_path, data_dir=tmp_path, cache_enabled=False)
+    llm = FakeLLM().llm(settings, clock=clock)
+    assert llm.clock is clock
+    registry = build_registry(settings, [FakeSearch().provider()], lambda url: "", cache=None)
+    assert Orchestrator(settings, llm=llm, registry=registry).clock is clock

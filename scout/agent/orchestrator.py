@@ -117,7 +117,7 @@ class Orchestrator:
         self.started_at = now_utc()
         if listener is not None:
             self.llm.listener = listener  # e.g. the UI shows rate-limit waits as they start
-        self.clock = self.llm._clock
+        self.clock = self.llm.clock
         self.budget = Budget(settings, self.llm, clock=self.clock)
         self._started = self.clock()
         self._switches = 0
