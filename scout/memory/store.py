@@ -3,6 +3,8 @@
 Tables (created on startup): runs, facts, sources, lessons, feedback. Beyond the SPEC columns,
 facts carry ``volatility`` (stable | news, for time-to-live) and ``snippet`` (so remembered
 evidence still passes the verifier's numeric check), and lessons carry ``uses``.
+
+Schema changes after the baseline are ordered migrations tracked in ``PRAGMA user_version``.
 """
 
 from __future__ import annotations
@@ -42,6 +44,13 @@ CREATE TABLE IF NOT EXISTS feedback (
     id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT, section TEXT, rating TEXT, created_at TEXT
 );
 """
+
+# Ordered schema migrations on top of ``_SCHEMA``; migration N sets ``PRAGMA user_version = N``.
+# Append only: never edit or reorder an entry that has shipped.
+_MIGRATIONS: tuple[str, ...] = (
+    # v1: facts saved before the executor's provenance check stay at 0 and are not recalled.
+    "ALTER TABLE facts ADD COLUMN provenance_checked INTEGER DEFAULT 0",
+)
 
 _ENTITY_SUFFIXES = re.compile(
     r"\b(private limited|pvt\.? ltd\.?|pvt|ltd\.?|limited|inc\.?|incorporated|"
@@ -107,6 +116,27 @@ class MemoryStore:
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA synchronous=NORMAL")
         self.conn.executescript(_SCHEMA)
+        self._migrate()
+
+    def _migrate(self) -> None:
+        """Apply pending ``_MIGRATIONS`` in order, each atomically with its version bump.
+
+        Each migration takes the write lock first (``BEGIN IMMEDIATE``) and re-reads the version
+        under it, so a migration another connection applied in the meantime is skipped.
+        """
+        current = self.conn.execute("PRAGMA user_version").fetchone()[0]
+        for version, statement in enumerate(_MIGRATIONS, start=1):
+            if version <= current:
+                continue
+            self.conn.execute("BEGIN IMMEDIATE")
+            try:
+                if self.conn.execute("PRAGMA user_version").fetchone()[0] < version:
+                    self.conn.execute(statement)
+                    self.conn.execute(f"PRAGMA user_version = {version:d}")
+            except Exception:
+                self.conn.execute("ROLLBACK")
+                raise
+            self.conn.execute("COMMIT")
 
     def close(self) -> None:
         """Close the connection."""
@@ -159,7 +189,12 @@ class MemoryStore:
     def add_facts(
         self, entity: str, evidence: Iterable[Evidence], run_id: str, now: datetime | None = None
     ) -> int:
-        """Persist evidence as facts; an identical claim+source refreshes its timestamp."""
+        """Persist evidence as provenance-checked facts; an identical claim+source is refreshed.
+
+        Only evidence whose snippet passed the executor's provenance check may be stored here
+        (the run ledger, minus facts recalled from memory). A refresh also replaces the snippet,
+        so a fact saved before the check is upgraded only with a checked snippet.
+        """
         now = now or now_utc()
         added = 0
         for e in evidence:
@@ -169,13 +204,15 @@ class MemoryStore:
             ).fetchone()
             if existing:
                 self.conn.execute(
-                    "UPDATE facts SET captured_at=?, run_id=? WHERE id=?",
-                    (_iso(now), run_id, existing["id"]),
+                    "UPDATE facts SET captured_at=?, run_id=?, snippet=?, provenance_checked=1"
+                    " WHERE id=?",
+                    (_iso(now), run_id, e.snippet, existing["id"]),
                 )
                 continue
             self.conn.execute(
                 "INSERT INTO facts (entity, topic, claim, source_url, captured_at, confidence,"
-                " run_id, volatility, snippet) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " run_id, volatility, snippet, provenance_checked)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)",
                 (
                     entity,
                     e.topic,
@@ -192,10 +229,13 @@ class MemoryStore:
         self.conn.commit()
         return added
 
-    def facts(self, entity: str) -> list[Fact]:
-        """All facts for an entity, newest first."""
+    def facts(self, entity: str, include_unchecked: bool = False) -> list[Fact]:
+        """Facts for an entity, newest first; only provenance-checked ones unless asked."""
+        checked = "" if include_unchecked else " AND provenance_checked = 1"
         rows = self.conn.execute(
-            "SELECT * FROM facts WHERE entity=? ORDER BY captured_at DESC, id DESC", (entity,)
+            f"SELECT * FROM facts WHERE entity=?{checked}"  # noqa: S608 - fixed fragment
+            " ORDER BY captured_at DESC, id DESC",
+            (entity,),
         ).fetchall()
         return [
             Fact(
@@ -228,17 +268,19 @@ class MemoryStore:
         max_chars: int,
         now: datetime | None = None,
         relevance: str = "",
+        include_unchecked: bool = False,
     ) -> tuple[list[Fact], list[Fact]]:
         """(fresh, stale) facts for an entity; fresh capped by count and total characters.
 
         Fresh facts are ranked by keyword overlap with ``relevance`` (purpose hints + goal),
-        then by freshness, before the caps apply.
+        then by freshness, before the caps apply. Facts saved before the provenance check are
+        left out unless ``include_unchecked``.
         """
         now = now or now_utc()
         wanted = keywords(relevance)
         candidates: list[Fact] = []
         stale: list[Fact] = []
-        for fact in self.facts(entity):  # newest first
+        for fact in self.facts(entity, include_unchecked):  # newest first
             if self.is_fresh(fact, now, stable_days, news_days):
                 candidates.append(fact)
             else:

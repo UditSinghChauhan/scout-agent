@@ -36,8 +36,12 @@ from scout.tools.registry import REPEAT_NOTE, ToolRegistry
 logger = logging.getLogger(__name__)
 
 EmitFn = Callable[[EventType, dict[str, Any]], Event]
-RejectReason = Literal["personal_profile", "unseen_url", "empty_snippet", "snippet_not_in_source"]
-SNIPPET_REASONS: frozenset[str] = frozenset({"empty_snippet", "snippet_not_in_source"})
+RejectReason = Literal[
+    "personal_profile", "unseen_url", "empty_snippet", "snippet_too_short", "snippet_not_in_source"
+]
+SNIPPET_REASONS: frozenset[str] = frozenset(
+    {"empty_snippet", "snippet_too_short", "snippet_not_in_source"}
+)
 
 _TAG_RE = re.compile(r"</?untrusted_content[^>]*>")
 _PUNCT = str.maketrans(
@@ -140,14 +144,43 @@ def snippet_in_source(snippet: str, source: str, min_ratio: float = 0.85) -> boo
     return find_snippet_span(snippet, source, min_ratio) is not None
 
 
-def _best_span(snippet: str, sources: Iterable[str], min_ratio: float) -> str | None:
-    """The source text that best matches ``snippet`` (an exact match wins), or None."""
+def _best_span(
+    snippet: str, sources: Iterable[str], min_ratio: float, whole_source: bool = False
+) -> str | None:
+    """The source text that best matches ``snippet`` (an exact match wins), or None.
+
+    Returns the matched span, or with ``whole_source`` the entire matching source text.
+    """
     best: tuple[float, str] | None = None
     for source in sources:
         found = _match(snippet, source, min_ratio)
         if found and (best is None or found[2] > best[0]):
-            best = (found[2], source[found[0] : found[1]].strip())
+            text = source if whole_source else source[found[0] : found[1]]
+            best = (found[2], text.strip())
     return best[1] if best else None
+
+
+def _redact_profiles(value: Any, patterns: tuple[str, ...]) -> Any:
+    """``value`` (tool args) with every personal-profile URL in it replaced by its domain.
+
+    For the trace only: the tool itself still receives, and refuses, the real URL.
+    """
+    if isinstance(value, dict):
+        return {k: _redact_profiles(v, patterns) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_redact_profiles(v, patterns) for v in value]
+    if not isinstance(value, str) or not is_personal_profile(value, patterns):
+        return value
+
+    def domain(match: re.Match[str]) -> str:
+        token = match.group()
+        if not is_personal_profile(token, patterns):
+            return token
+        prefix = "site:" if token.lower().startswith("site:") else ""
+        url = token[len(prefix) :]
+        return prefix + domain_of(url if "://" in url else f"https://{url}")
+
+    return re.sub(r"\S+", domain, value)
 
 
 @dataclass(frozen=True)
@@ -173,21 +206,31 @@ def _accept_findings(
     """Split findings into accepted (snippet replaced by the source span) and rejected.
 
     ``sources`` maps a normalised URL the model saw to the texts it was shown for it. Profiles
-    are checked first so a profile URL is never reported under another reason.
+    are checked first so a profile URL is never reported under another reason. A snippet
+    shorter than ``snippet_min_chars`` may only match a source text that is itself that short,
+    and then the whole source text becomes the stored snippet.
     """
+    minimum = settings.snippet_min_chars
     accepted: list[Finding] = []
     rejected: list[Rejection] = []
     for finding in findings:
         url = normalize_url(finding.source_url)
+        size = len(_normalize(finding.snippet)[0])
+        texts = sources.get(url, [])
+        short = size < minimum
+        if short:
+            texts = [t for t in texts if len(_normalize(t)[0]) < minimum]
         reason: RejectReason
         if is_personal_profile(finding.source_url, settings.personal_profile_patterns):
             reason = "personal_profile"
         elif url not in sources:
             reason = "unseen_url"
-        elif not _normalize(finding.snippet)[0]:
+        elif not size:
             reason = "empty_snippet"
+        elif short and not texts:
+            reason = "snippet_too_short"
         else:
-            span = _best_span(finding.snippet, sources[url], settings.snippet_match_ratio)
+            span = _best_span(finding.snippet, texts, settings.snippet_match_ratio, short)
             if span:
                 accepted.append(finding.model_copy(update={"snippet": span}))
                 continue
@@ -342,6 +385,7 @@ def execute_step(
         purpose=purpose,
         tools=registry.describe(with_thought=True),
         max_iterations=settings.max_react_iterations,
+        snippet_min_chars=settings.snippet_min_chars,
     )
     full = settings.scratchpad_full_observations
     entries: list[_Entry] = []
@@ -371,7 +415,8 @@ def execute_step(
             break
         if not budget.tool_available():
             break
-        yield emit("tool_call", {"step_id": step.id, "tool": action.tool, "args": action.args})
+        args = _redact_profiles(action.args, settings.personal_profile_patterns)
+        yield emit("tool_call", {"step_id": step.id, "tool": action.tool, "args": args})
         run = registry.run(action.tool or "", action.args)
         if not run.repeated:
             budget.charge_tool()
