@@ -370,6 +370,11 @@ class LLM:
         self.listener: Callable[[str, dict[str, object]], None] | None = None
 
     @property
+    def clock(self) -> Callable[[], float]:
+        """The monotonic clock this client times calls and backoff deadlines with."""
+        return self._clock
+
+    @property
     def backend(self) -> ChatBackend:
         """The transport, created lazily so constructing an LLM never needs a key."""
         if self._backend is None:
