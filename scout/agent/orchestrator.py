@@ -61,6 +61,10 @@ SYNTHESIS_RETRIES = 1  # one more full attempt when the brief JSON is malformed 
 UNKNOWN_OVERLAP = 0.5  # an Unknowns line sharing half its keywords with an earlier one is a repeat
 
 
+class OrchestratorStateError(RuntimeError):
+    """A stage ran before the run state it depends on was set (a bug in the stage order)."""
+
+
 def new_run_id() -> str:
     """Sortable, unique run id such as 20260927-071503-a1b2."""
     return f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:4]}"
@@ -181,7 +185,8 @@ class Orchestrator:
     def _recall(self, state: RunState) -> Iterator[Event]:
         """Load fresh facts for the targets, the top lessons for the purpose and source scores."""
         state.stage = "recall"
-        assert state.task is not None
+        if state.task is None:
+            raise OrchestratorStateError("recall needs a task")
         s = self.settings
         playbook = state.playbook or get_playbook(state.task.purpose_type)
         relevance = " ".join([state.goal, *playbook.research_hints])
@@ -224,7 +229,8 @@ class Orchestrator:
 
     def _plan(self, state: RunState) -> Iterator[Event]:
         state.stage = "plan"
-        assert state.task is not None and state.playbook is not None
+        if state.task is None or state.playbook is None:
+            raise OrchestratorStateError("plan needs a task and a playbook")
         yield self._event("plan", "stage_started", {"task": state.task.model_dump()})
         try:
             state.plan = make_plan(
@@ -260,7 +266,8 @@ class Orchestrator:
 
     def _execute(self, state: RunState) -> Iterator[Event]:
         state.stage = "execute"
-        assert state.plan is not None
+        if state.plan is None:
+            raise OrchestratorStateError("execute needs a plan")
         steps: list[Step] = list(state.plan.steps[: self.settings.max_total_steps])
         index = 0
         while index < len(steps):
@@ -327,7 +334,8 @@ class Orchestrator:
         self, state: RunState, step: Step, approach: str | None
     ) -> Generator[Event, None, StepResult | None]:
         """Execute one step; None if the wall clock ran out mid-step."""
-        assert state.task is not None and state.playbook is not None
+        if state.task is None or state.playbook is None:
+            raise OrchestratorStateError("a step needs a task and a playbook")
         yield self._event("execute", "step_started", {**step.model_dump(), "approach": approach})
 
         def emit(type_: EventType, payload: dict[str, Any]) -> Event:
@@ -365,7 +373,8 @@ class Orchestrator:
         self, state: RunState, step: Step, result: StepResult
     ) -> Generator[Event, None, Critique | None]:
         """Ask the critic for a verdict; None when the budget leaves no room for it."""
-        assert state.playbook is not None
+        if state.playbook is None:
+            raise OrchestratorStateError("critique needs a playbook")
         if not self.budget.llm_available():
             return None
         try:
@@ -424,7 +433,8 @@ class Orchestrator:
 
     def _synthesize(self, state: RunState) -> Iterator[Event]:
         state.stage = "synthesize"
-        assert state.task is not None and state.playbook is not None
+        if state.task is None or state.playbook is None:
+            raise OrchestratorStateError("synthesize needs a task and a playbook")
         # Synthesis always runs; it gets a short grace period past the wall clock.
         self.llm.deadline = (
             self._started + self.settings.max_wall_clock_s + self.settings.synthesis_grace_s
@@ -464,7 +474,8 @@ class Orchestrator:
     def _verify(self, state: RunState) -> Iterator[Event]:
         """Deterministic claim checks, one revision pass, then move leftovers to Unknowns."""
         state.stage = "verify"
-        assert state.brief is not None
+        if state.brief is None:
+            raise OrchestratorStateError("verify needs a brief")
         issues = find_issues(state.brief, state.ledger)
         state.flagged_numeric = [i.text for i in issues if i.kind == "numeric"]
         before = len(issues)
@@ -503,7 +514,8 @@ class Orchestrator:
     def _reflect(self, state: RunState) -> Iterator[Event]:
         """Persist verified facts and source ratings, then learn lessons (one LLM call)."""
         state.stage = "reflect"
-        assert state.task is not None and state.brief is not None
+        if state.task is None or state.brief is None:
+            raise OrchestratorStateError("reflect needs a task and a brief")
         self._persist_facts(state)
         for critique in state.critiques:
             for url, rating in critique.source_ratings.items():
@@ -547,7 +559,8 @@ class Orchestrator:
 
     def _persist_facts(self, state: RunState) -> None:
         """Store evidence cited by the verified brief as facts, keyed by normalized entity."""
-        assert state.task is not None and state.brief is not None
+        if state.task is None or state.brief is None:
+            raise OrchestratorStateError("persisting facts needs a task and a brief")
         cited = {i for sec in state.brief.sections for c in sec.claims for i in c.evidence_ids}
         by_entity: dict[str, list[Evidence]] = {}
         for e in state.ledger.items:
@@ -563,7 +576,8 @@ class Orchestrator:
 
     def _run_summary(self, state: RunState) -> str:
         """Compact run summary for the reflector."""
-        assert state.task is not None
+        if state.task is None:
+            raise OrchestratorStateError("the run summary needs a task")
         lines = [f"Goal: {state.goal}", f"Purpose: {state.task.purpose_type}", "Steps:"]
         for entry in state.step_log:
             line = f"- step {entry['step_id']}: {entry['question']} -> {entry['verdict']}"
