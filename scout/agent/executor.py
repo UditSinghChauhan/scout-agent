@@ -5,21 +5,28 @@ returns the ``StepResult`` (use ``result = yield from execute_step(...)``). Each
 the LLM for one :class:`Action`; tool results are observed; a ``finish`` action returns findings
 that become ledger :class:`Evidence` with ids. If the loop runs out of iterations or tool budget,
 the model is asked once more to finish from what it has.
+
+Provenance: a finding is accepted only if its snippet is found in the text the model was shown for
+the cited URL. The stored snippet is then that span of the source, never the model's own wording.
 """
 
 from __future__ import annotations
 
+import difflib
 import json
 import logging
 import re
-from collections.abc import Callable, Generator
+import unicodedata
+from collections import Counter
+from collections.abc import Callable, Generator, Iterable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 
 from scout.agent.budget import SYNTHESIS_RESERVE, Budget
 from scout.config import Settings
 from scout.events import Event, EventType
 from scout.llm import LLM, LLMValidationError
+from scout.memory.store import domain_of
 from scout.playbooks import Playbook
 from scout.prompts import load_prompt
 from scout.safety import is_personal_profile
@@ -29,8 +36,13 @@ from scout.tools.registry import REPEAT_NOTE, ToolRegistry
 logger = logging.getLogger(__name__)
 
 EmitFn = Callable[[EventType, dict[str, Any]], Event]
+RejectReason = Literal["personal_profile", "unseen_url", "empty_snippet", "snippet_not_in_source"]
+SNIPPET_REASONS: frozenset[str] = frozenset({"empty_snippet", "snippet_not_in_source"})
 
 _TAG_RE = re.compile(r"</?untrusted_content[^>]*>")
+_PUNCT = str.maketrans(
+    dict.fromkeys("‘’‚‛′", "'") | dict.fromkeys("“”„‟″«»", '"') | dict.fromkeys("‐‑‒–—―−", "-")
+)
 
 
 def normalize_url(url: str) -> str:
@@ -41,6 +53,150 @@ def normalize_url(url: str) -> str:
         return url
     host, slash, path = rest.partition("/")
     return f"{scheme.lower()}://{host.lower()}{slash}{path}"
+
+
+# --- provenance ----------------------------------------------------------------------------------
+
+
+def _normalize(text: str) -> tuple[str, list[int]]:
+    """Matching form of ``text`` plus, per output character, its offset in ``text``.
+
+    Drops ``<untrusted_content>`` tags, applies NFKC, casefolds, unifies quotes and dashes and
+    collapses whitespace (no leading or trailing space). A character that expands (``ß`` -> ``ss``)
+    maps every output character back to the same original offset.
+    """
+    masked = _TAG_RE.sub(lambda m: " " * len(m.group()), text)
+    out: list[str] = []
+    index: list[int] = []
+    pending_space: int | None = None
+    for pos, ch in enumerate(masked):
+        for c in unicodedata.normalize("NFKC", ch).casefold().translate(_PUNCT):
+            if c.isspace():
+                if pending_space is None:
+                    pending_space = pos
+                continue
+            if pending_space is not None and out:
+                out.append(" ")
+                index.append(pending_space)
+            pending_space = None
+            out.append(c)
+            index.append(pos)
+    return "".join(out), index
+
+
+def _is_token_char(text: str, i: int) -> bool:
+    """True if ``text[i]`` belongs to a word or number (``,``/``.`` count between digits)."""
+    if not 0 <= i < len(text):
+        return False
+    ch = text[i]
+    if ch.isalnum():
+        return True
+    return ch in ",." and 0 < i < len(text) - 1 and text[i - 1].isdigit() and text[i + 1].isdigit()
+
+
+def _widen(text: str, lo: int, hi: int) -> tuple[int, int]:
+    """Grow ``text[lo:hi]`` to whole tokens, so a cut never turns "800" into "80"."""
+    while lo > 0 and _is_token_char(text, lo - 1) and _is_token_char(text, lo):
+        lo -= 1
+    while hi < len(text) and _is_token_char(text, hi) and _is_token_char(text, hi - 1):
+        hi += 1
+    return lo, hi
+
+
+def _match(snippet: str, source: str, min_ratio: float) -> tuple[int, int, float] | None:
+    """(start, end, ratio) of ``snippet`` in ``source`` as original offsets; None if no match.
+
+    Exact (normalised) substring first, ratio 1.0. Otherwise the longest common block, accepted
+    when it covers at least ``min_ratio`` of the snippet; only that block is returned, so text the
+    snippet adds beyond the source never becomes part of the span.
+    """
+    snip, _ = _normalize(snippet)
+    src, index = _normalize(source)
+    if not snip or not src:
+        return None
+    start = src.find(snip)
+    size = len(snip)
+    if start < 0:
+        block = difflib.SequenceMatcher(None, snip, src, autojunk=False).find_longest_match(
+            0, len(snip), 0, len(src)
+        )
+        if block.size == 0 or block.size / len(snip) < min_ratio:
+            return None
+        start, size = block.b, block.size
+    lo, hi = _widen(source, index[start], index[start + size - 1] + 1)
+    return lo, hi, size / len(snip)
+
+
+def find_snippet_span(
+    snippet: str, source: str, min_ratio: float = 0.85
+) -> tuple[int, int] | None:
+    """Original-text span of ``source`` that ``snippet`` was taken from; None if not found."""
+    found = _match(snippet, source, min_ratio)
+    return (found[0], found[1]) if found else None
+
+
+def snippet_in_source(snippet: str, source: str, min_ratio: float = 0.85) -> bool:
+    """True if ``snippet`` is in ``source`` (exactly or as a near match), after normalising."""
+    return find_snippet_span(snippet, source, min_ratio) is not None
+
+
+def _best_span(snippet: str, sources: Iterable[str], min_ratio: float) -> str | None:
+    """The source text that best matches ``snippet`` (an exact match wins), or None."""
+    best: tuple[float, str] | None = None
+    for source in sources:
+        found = _match(snippet, source, min_ratio)
+        if found and (best is None or found[2] > best[0]):
+            best = (found[2], source[found[0] : found[1]].strip())
+    return best[1] if best else None
+
+
+@dataclass(frozen=True)
+class Rejection:
+    """A finding the executor refused to put in the ledger."""
+
+    url: str
+    reason: RejectReason
+
+    def payload(self, step_id: int) -> dict[str, Any]:
+        """Trace payload; a personal profile is identified by its domain only, never its URL."""
+        payload: dict[str, Any] = {"step_id": step_id, "reason": self.reason}
+        if self.reason == "personal_profile":
+            payload["domain"] = domain_of(self.url)
+        else:
+            payload["url"] = self.url
+        return payload
+
+
+def _accept_findings(
+    findings: Iterable[Finding], sources: dict[str, list[str]], settings: Settings
+) -> tuple[list[Finding], list[Rejection]]:
+    """Split findings into accepted (snippet replaced by the source span) and rejected.
+
+    ``sources`` maps a normalised URL the model saw to the texts it was shown for it. Profiles
+    are checked first so a profile URL is never reported under another reason.
+    """
+    accepted: list[Finding] = []
+    rejected: list[Rejection] = []
+    for finding in findings:
+        url = normalize_url(finding.source_url)
+        reason: RejectReason
+        if is_personal_profile(finding.source_url, settings.personal_profile_patterns):
+            reason = "personal_profile"
+        elif url not in sources:
+            reason = "unseen_url"
+        elif not _normalize(finding.snippet)[0]:
+            reason = "empty_snippet"
+        else:
+            span = _best_span(finding.snippet, sources[url], settings.snippet_match_ratio)
+            if span:
+                accepted.append(finding.model_copy(update={"snippet": span}))
+                continue
+            reason = "snippet_not_in_source"
+        rejected.append(Rejection(finding.source_url.strip(), reason))
+    return accepted, rejected
+
+
+# --- ledger --------------------------------------------------------------------------------------
 
 
 @dataclass
@@ -189,7 +345,7 @@ def execute_step(
     )
     full = settings.scratchpad_full_observations
     entries: list[_Entry] = []
-    seen_urls: set[str] = set()
+    sources: dict[str, list[str]] = {}  # normalised URL seen -> texts the model was shown for it
     finish: Action | None = None
     iterations = 0
 
@@ -219,7 +375,12 @@ def execute_step(
         run = registry.run(action.tool or "", action.args)
         if not run.repeated:
             budget.charge_tool()
-        seen_urls.update(normalize_url(u) for u in run.urls)
+        for url in run.urls:
+            sources.setdefault(normalize_url(url), [])
+        for url, text in run.sources:
+            texts = sources.setdefault(normalize_url(url), [])
+            if text not in texts:
+                texts.append(text)
         entries.append(_Entry(run.observation, run.urls))
         yield emit(
             "tool_result",
@@ -246,19 +407,17 @@ def execute_step(
         except LLMValidationError:
             yield emit("error", {"step_id": step.id, "message": "invalid final action JSON"})
 
+    accepted, rejected = _accept_findings(finish.findings if finish else [], sources, settings)
+    for rejection in rejected:
+        yield emit("evidence_rejected", rejection.payload(step.id))
+    if rejected:
+        reasons = dict(Counter(r.reason for r in rejected))
+        logger.info("Step %d: rejected %d findings %s", step.id, len(rejected), reasons)
     evidence: list[Evidence] = []
-    dropped = 0
-    for finding in finish.findings if finish else []:
-        if normalize_url(finding.source_url) not in seen_urls or is_personal_profile(
-            finding.source_url, settings.personal_profile_patterns
-        ):
-            dropped += 1
-            continue
+    for finding in accepted:
         item = ledger.add(finding, step.id, topic=step.question[:160])
         if item:
             evidence.append(item)
-    if dropped:
-        logger.info("Step %d: dropped %d findings citing unseen URLs", step.id, dropped)
 
     status = "done" if evidence else "no_findings"
     if budget.exhausted_reason:
@@ -273,4 +432,5 @@ def execute_step(
             {u for e in entries for u in e.urls if e.observation.tool == "fetch_page"}
             | {e.source_url for e in evidence}
         ),
+        snippets_rejected=sum(r.reason in SNIPPET_REASONS for r in rejected),
     )

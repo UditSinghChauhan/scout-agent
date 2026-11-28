@@ -161,6 +161,9 @@ class StepResult(BaseModel):
     observations: list[Observation] = Field(default_factory=list)
     iterations: int = Field(default=0, ge=0)
     sources_used: list[str] = Field(default_factory=list)
+    snippets_rejected: int = Field(
+        default=0, ge=0, description="Findings dropped because the snippet was not in the source."
+    )
 
 
 class Critique(BaseModel):
@@ -218,6 +221,9 @@ class RunMetrics(BaseModel):
     citation_coverage: float = Field(default=0.0, ge=0.0, le=100.0, description="Percent.")
     unsupported_claims: int = Field(default=0, description="Claims moved to Unknowns.")
     flagged_numeric_claims: int = 0
+    snippets_rejected: int = Field(
+        default=0, description="Findings whose snippet was not found in the cited source."
+    )
     revised_claims: int = 0
     facts_reused: int = 0
     memory_steps: int = 0

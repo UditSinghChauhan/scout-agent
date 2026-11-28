@@ -25,14 +25,20 @@ logger = logging.getLogger(__name__)
 
 ToolFn = Callable[..., "ToolOutput"]
 REPEAT_NOTE = "(already done; try a different query or source)"
+Sources = tuple[tuple[str, str], ...]  # (url, the text the model was shown for that url)
 
 
 @dataclass(frozen=True)
 class ToolOutput:
-    """Tool result: prompt-ready text plus the source URLs it exposed."""
+    """Tool result: prompt-ready text, the source URLs it exposed and each URL's source text.
+
+    ``sources`` holds the unwrapped text the model saw per URL; the executor checks finding
+    snippets against it.
+    """
 
     text: str
     urls: tuple[str, ...] = ()
+    sources: Sources = ()
 
 
 @dataclass(frozen=True)
@@ -70,6 +76,7 @@ class ToolRun(NamedTuple):
     observation: Observation
     urls: tuple[str, ...]
     repeated: bool = False
+    sources: Sources = ()
 
 
 def _call_key(name: str, args: dict[str, Any]) -> str:
@@ -111,11 +118,13 @@ class ToolRegistry:
             obs = earlier.observation.model_copy(
                 update={"args": args, "content": f"{REPEAT_NOTE}\n{earlier.observation.content}"}
             )
-            return ToolRun(obs, earlier.urls, repeated=True)
+            return ToolRun(obs, earlier.urls, repeated=True, sources=earlier.sources)
         try:
             output = tool.fn(**clean)
             result = ToolRun(
-                Observation(tool=name, args=args, ok=True, content=output.text), output.urls
+                Observation(tool=name, args=args, ok=True, content=output.text),
+                output.urls,
+                sources=output.sources,
             )
         except Exception as exc:  # noqa: BLE001 - every tool failure becomes an observation
             logger.info("Tool %s failed: %s", name, exc)
@@ -170,7 +179,11 @@ def build_registry(
             results = rerank_by_source(
                 results, store.source_scores(), settings.source_rerank_weight
             )
-        return ToolOutput(format_search_results(query, results), tuple(r["url"] for r in results))
+        return ToolOutput(
+            format_search_results(query, results),
+            tuple(r["url"] for r in results),
+            tuple((r["url"], f"{r['title']}\n{r['snippet']}") for r in results),
+        )
 
     def fetch_tool(url: str, focus: str = "") -> ToolOutput:
         if is_personal_profile(url, settings.personal_profile_patterns):
@@ -183,7 +196,7 @@ def build_registry(
         else:
             stats["cache_hits"] += 1
         cut = focus_text(text, focus, settings.fetch_max_chars)
-        return ToolOutput(wrap_untrusted(cut, url), (url,))
+        return ToolOutput(wrap_untrusted(cut, url), (url,), ((url, cut),))
 
     tools = [
         Tool(
@@ -237,6 +250,7 @@ def _recall_tool(settings: Settings, store: MemoryStore) -> Tool:
         return ToolOutput(
             wrap_untrusted("\n".join(lines), f"memory: {key}"),
             tuple(f.source_url for f in facts),
+            tuple((f.source_url, f.snippet) for f in facts),
         )
 
     return Tool(

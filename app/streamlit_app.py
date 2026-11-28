@@ -77,6 +77,7 @@ ENTRY_ICONS = {
     "thought": "💭",
     "tool": "🔧",
     "result": "👁",
+    "rejected": "🚫",
     "critique": "⚖️",
     "retry": "🔁",
     "switch": "🔀",
