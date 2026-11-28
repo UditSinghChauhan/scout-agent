@@ -160,6 +160,29 @@ def _best_span(
     return best[1] if best else None
 
 
+def _redact_profiles(value: Any, patterns: tuple[str, ...]) -> Any:
+    """``value`` (tool args) with every personal-profile URL in it replaced by its domain.
+
+    For the trace only: the tool itself still receives, and refuses, the real URL.
+    """
+    if isinstance(value, dict):
+        return {k: _redact_profiles(v, patterns) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_redact_profiles(v, patterns) for v in value]
+    if not isinstance(value, str) or not is_personal_profile(value, patterns):
+        return value
+
+    def domain(match: re.Match[str]) -> str:
+        token = match.group()
+        if not is_personal_profile(token, patterns):
+            return token
+        prefix = "site:" if token.lower().startswith("site:") else ""
+        url = token[len(prefix) :]
+        return prefix + domain_of(url if "://" in url else f"https://{url}")
+
+    return re.sub(r"\S+", domain, value)
+
+
 @dataclass(frozen=True)
 class Rejection:
     """A finding the executor refused to put in the ledger."""
@@ -392,7 +415,8 @@ def execute_step(
             break
         if not budget.tool_available():
             break
-        yield emit("tool_call", {"step_id": step.id, "tool": action.tool, "args": action.args})
+        args = _redact_profiles(action.args, settings.personal_profile_patterns)
+        yield emit("tool_call", {"step_id": step.id, "tool": action.tool, "args": args})
         run = registry.run(action.tool or "", action.args)
         if not run.repeated:
             budget.charge_tool()

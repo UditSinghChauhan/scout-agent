@@ -12,6 +12,7 @@ from scout.agent.budget import Budget
 from scout.agent.executor import (
     EvidenceLedger,
     _accept_findings,
+    _redact_profiles,
     execute_step,
     find_snippet_span,
     snippet_in_source,
@@ -311,6 +312,49 @@ def test_profile_url_never_reaches_trace_or_logs(
         events = list(recorder.record(orch.run("Research Zoho")))
     rejected = [e.payload for e in events if e.type == "evidence_rejected"]
     assert rejected == [{"step_id": 1, "reason": "personal_profile", "domain": "in.linkedin.com"}]
+    trace = (tmp_path / orch.run_id / "trace.jsonl").read_text(encoding="utf-8")
+    assert "linkedin.com/in/" not in trace
+    assert "linkedin.com/in/" not in caplog.text
+
+
+def test_redact_profiles_keeps_only_domains_and_leaves_other_args(tmp_path: Path) -> None:
+    patterns = settings_for(tmp_path).personal_profile_patterns
+    args = {
+        "query": "zoho cto  linkedin.com/in/some-person\tsite:linkedin.com/in/x",
+        "urls": [PROFILE_URL, PAGE_URL],
+        "max_results": 3,
+    }
+    assert _redact_profiles(args, patterns) == {
+        "query": "zoho cto  linkedin.com\tsite:linkedin.com",
+        "urls": ["in.linkedin.com", PAGE_URL],
+        "max_results": 3,
+    }
+
+
+def test_profile_fetch_args_show_only_the_domain(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    settings = settings_for(tmp_path)
+    fetch = {"thought": "r", "type": "tool", "tool": "fetch_page", "args": {"url": PROFILE_URL}}
+    fake = FakeLLM(
+        [
+            {"targets": ["Zoho"], "purpose_type": "sales_prospect"},
+            {"steps": [{"id": 1, "question": "Who leads tech?"}]},
+            fetch,
+            {"thought": "f", "type": "finish", "findings": []},
+            {"verdict": "complete"},
+            {"title": "Zoho", "sections": []},
+            {"lessons": []},
+        ]
+    )
+    orch = Orchestrator(settings, llm=fake.llm(settings), registry=registry(settings))
+    recorder = RunRecorder(tmp_path, orch.run_id)
+    with caplog.at_level(logging.DEBUG, logger="scout"):
+        events = list(recorder.record(orch.run("Research Zoho")))
+    [call] = [e.payload for e in events if e.type == "tool_call"]
+    assert call["args"] == {"url": "in.linkedin.com"}
+    [result] = [e.payload for e in events if e.type == "tool_result"]
+    assert result["ok"] is False and "personal profile" in result["summary"]  # still refused
     trace = (tmp_path / orch.run_id / "trace.jsonl").read_text(encoding="utf-8")
     assert "linkedin.com/in/" not in trace
     assert "linkedin.com/in/" not in caplog.text
